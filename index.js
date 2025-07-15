@@ -7,8 +7,11 @@ dotenv.config();
 
 const app = express();
 app.use(cors({
-  origin: "http://localhost:5173",
-  credentials: true
+  origin: [
+    'http://localhost:5173', // cho phép local dev
+    'https://student-tracker-pink.vercel.app' // cho phép domain Vercel
+  ],
+  credentials: true // nếu bạn dùng cookie/session
 }));
 app.use(express.json());
 
