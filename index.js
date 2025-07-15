@@ -8,11 +8,10 @@ dotenv.config();
 const app = express();
 app.use(cors({
   origin: [
-    'http://localhost:5173', // cho phép local dev
-    'https://student-tracker-pink.vercel.app', // cho phép domain Vercel
-    "https://trackerstudent.netlify.app/" //netify
+    "http://localhost:5173",
+    "https://trackerstudent.netlify.app"
   ],
-  credentials: true // nếu bạn dùng cookie/session
+  credentials: true
 }));
 app.use(express.json());
 
