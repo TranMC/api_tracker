@@ -9,7 +9,8 @@ const app = express();
 app.use(cors({
   origin: [
     'http://localhost:5173', // cho phép local dev
-    'https://student-tracker-pink.vercel.app' // cho phép domain Vercel
+    'https://student-tracker-pink.vercel.app', // cho phép domain Vercel
+    "https://trackerstudent.netlify.app/" //netify
   ],
   credentials: true // nếu bạn dùng cookie/session
 }));
