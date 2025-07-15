@@ -99,21 +99,18 @@ app.get("/api/classes/today", async (req, res) => {
     const today = new Date();
     const classes = await getSheetData("Classes");
     const students = await getSheetData("Students");
-    // Giả định cột Start Time, End Time định dạng HH:mm hoặc ISO, có cột Date hoặc lặp theo ngày trong tuần
-    // Ở đây chỉ lọc theo ngày hiện tại, bạn có thể chỉnh lại logic nếu cần
     const todayStr = today.toISOString().split("T")[0];
     const todayClasses = classes.filter(c => {
-      // Nếu có cột Date thì so sánh, nếu không thì trả về tất cả
       if (c.Date) return c.Date === todayStr;
       return true;
     });
     const result = todayClasses.map(c => ({
-      id: c.ID || c.Id || c.id,
+      id: c["Class ID"] || c.ID || c.Id || c.id,
       name: c.Name || c.name,
       startTime: c["Start Time"] || c.startTime,
       endTime: c["End Time"] || c.endTime,
       isActive: true,
-      studentsCount: students.filter(s => s["Class ID"] === c.ID || s.classId === c.ID || s.classId === c.id).length,
+      studentsCount: students.filter(s => s["Class ID"] === (c["Class ID"] || c.ID || c.Id || c.id) || s.classId === (c["Class ID"] || c.ID || c.Id || c.id)).length,
     }));
     res.json(result);
   } catch (err) {
@@ -155,9 +152,9 @@ app.post("/api/classes", async (req, res) => {
 app.get("/api/classes", async (req, res) => {
   try {
     const classes = await getSheetData("Classes");
-    // Parse daysOfWeek và exceptionStudents nếu có
     const mapped = classes.map(item => ({
       ...item,
+      id: item["Class ID"] || item.ID || item.Id || item.id,
       daysOfWeek: item.DaysOfWeek ? JSON.parse(item.DaysOfWeek) : [],
       exceptionStudents: item.ExceptionStudents ? JSON.parse(item.ExceptionStudents) : {},
     }));
@@ -305,16 +302,22 @@ app.get("/api/students", async (req, res) => {
 // Ghi điểm danh
 app.post("/api/attendance", async (req, res) => {
   try {
-    const { studentId, classId, date, status } = req.body;
-    if (!studentId || !classId || !date || !status) {
+    const { studentId, studentName, classId, className, date, status, note } = req.body;
+    if (!studentId || !studentName || !classId || !className || !date || !status) {
       return res.status(400).json({ error: "Thiếu thông tin điểm danh" });
+    }
+    // Kiểm tra trùng lặp: đã có điểm danh cho học sinh này, lớp này, ngày này chưa?
+    const attendance = await getSheetData("Attendance");
+    const existed = attendance.find(a => a["Student ID"] == studentId && a["Class ID"] == classId && a["Date"] == date);
+    if (existed) {
+      return res.status(409).json({ error: "Đã có điểm danh cho học sinh này trong lớp này ngày này" });
     }
     await sheets.spreadsheets.values.append({
       spreadsheetId: SHEET_ID,
       range: "Attendance",
       valueInputOption: "USER_ENTERED",
       requestBody: {
-        values: [[studentId, "", classId, "", date, status, "", new Date().toISOString()]],
+        values: [[studentId, studentName, classId, className, date, status, note || "", new Date().toISOString()]],
       },
     });
     res.json({ success: true });
