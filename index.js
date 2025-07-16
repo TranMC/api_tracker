@@ -153,7 +153,10 @@ app.get("/api/classes/today", async (req, res) => {
       startTime: c["Start Time"] || c.startTime,
       endTime: c["End Time"] || c.endTime,
       isActive: true,
-      studentsCount: students.filter(s => s["Class ID"] === (c["Class ID"] || c.ID || c.Id || c.id) || s.classId === (c["Class ID"] || c.ID || c.Id || c.id)).length,
+      studentsCount: students.filter(s => {
+        const classIds = (s["Class ID"] || s.classId || "").split(",").map(x => x.trim());
+        return classIds.includes(c["Class ID"] || c.ID || c.Id || c.id);
+      }).length,
     }));
     res.json(result);
   } catch (err) {
@@ -288,7 +291,10 @@ app.get("/api/classes/:classId/students", async (req, res) => {
   try {
     const students = await getSheetData("Students");
     const classId = req.params.classId;
-    const filtered = students.filter(s => s["Class ID"] == classId || s.classId == classId);
+    const filtered = students.filter(s => {
+      const classIds = (s["Class ID"] || s.classId || "").split(",").map(x => x.trim());
+      return classIds.includes(classId);
+    });
     res.json(filtered);
   } catch (err) {
     console.error("[ERROR] /api/classes/:classId/students:", err);
@@ -441,28 +447,49 @@ app.get("/api/students", async (req, res) => {
   }
 });
 
-// Ghi điểm danh
+// Ghi điểm danh (upsert)
 app.post("/api/attendance", async (req, res) => {
   try {
     const { studentId, studentName, classId, className, date, status, note } = req.body;
     if (!studentId || !studentName || !classId || !className || !date || !status) {
       return res.status(400).json({ error: "Thiếu thông tin điểm danh" });
     }
-    // Kiểm tra trùng lặp: đã có điểm danh cho học sinh này, lớp này, ngày này chưa?
+    // Lấy dữ liệu attendance hiện tại
     const attendance = await getSheetData("Attendance");
-    const existed = attendance.find(a => a["Student ID"] == studentId && a["Class ID"] == classId && a["Date"] == date);
-    if (existed) {
-      return res.status(409).json({ error: "Đã có điểm danh cho học sinh này trong lớp này ngày này" });
-    }
-    await sheets.spreadsheets.values.append({
+    const rowIndex = attendance.findIndex(a => a["Student ID"] == studentId && a["Class ID"] == classId && a["Date"] == date);
+    // Lấy header để xác định vị trí cột
+    const resSheet = await sheets.spreadsheets.values.get({
       spreadsheetId: SHEET_ID,
       range: "Attendance",
-      valueInputOption: "USER_ENTERED",
-      requestBody: {
-        values: [[studentId, studentName, classId, className, date, status, note || "", formatTimestampVN()]],
-      },
     });
-    res.json({ success: true });
+    const headers = resSheet.data.values[0];
+    if (rowIndex !== -1) {
+      // Nếu đã có, update bản ghi
+      const updated = { ...attendance[rowIndex] };
+      updated["Status"] = status;
+      updated["Note"] = note || "";
+      updated["timestamp"] = formatTimestampVN();
+      // Nếu có các trường khác muốn update thì thêm vào đây
+      const rowValues = headers.map(h => updated[h] || "");
+      await sheets.spreadsheets.values.update({
+        spreadsheetId: SHEET_ID,
+        range: `Attendance!A${rowIndex + 2}:Z${rowIndex + 2}`,
+        valueInputOption: "USER_ENTERED",
+        requestBody: { values: [rowValues] },
+      });
+      return res.json({ success: true, updated: true });
+    } else {
+      // Nếu chưa có, thêm mới
+      await sheets.spreadsheets.values.append({
+        spreadsheetId: SHEET_ID,
+        range: "Attendance",
+        valueInputOption: "USER_ENTERED",
+        requestBody: {
+          values: [[studentId, studentName, classId, className, date, status, note || "", formatTimestampVN()]],
+        },
+      });
+      return res.json({ success: true, created: true });
+    }
   } catch (err) {
     console.error("[ERROR] /api/attendance:", err);
     res.status(500).json({ error: "Lỗi khi ghi điểm danh" });
