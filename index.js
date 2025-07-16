@@ -58,7 +58,7 @@ async function getSheetData(sheetName) {
 
 // Hàm format timestamp về DD/MM/YYYY HH:mm:ss (giờ Việt Nam)
 function formatTimestampVN(date = new Date()) {
-  const d = new Date(date.getTime() + 7 * 60 * 60 * 1000); // UTC+7
+  const d = new Date(date); // KHÔNG cộng thêm 7 tiếng nữa
   const day = String(d.getDate()).padStart(2, '0');
   const month = String(d.getMonth() + 1).padStart(2, '0');
   const year = d.getFullYear();
@@ -447,29 +447,44 @@ app.get("/api/students", async (req, res) => {
   }
 });
 
-// Ghi điểm danh (upsert)
+// Ghi điểm danh (upsert, theo studentId, classId, date, username)
 app.post("/api/attendance", async (req, res) => {
   try {
-    const { studentId, studentName, classId, className, date, status, note } = req.body;
-    if (!studentId || !studentName || !classId || !className || !date || !status) {
-      return res.status(400).json({ error: "Thiếu thông tin điểm danh" });
+    const { studentId, studentName, classId, className, date, status, note, username } = req.body;
+    if (!studentId || !studentName || !classId || !className || !date || !status || !username) {
+      return res.status(400).json({ error: "Thiếu thông tin điểm danh hoặc username" });
     }
     // Lấy dữ liệu attendance hiện tại
     const attendance = await getSheetData("Attendance");
-    const rowIndex = attendance.findIndex(a => a["Student ID"] == studentId && a["Class ID"] == classId && a["Date"] == date);
+    // Tìm bản ghi trùng cả 4 trường
+    const rowIndex = attendance.findIndex(a =>
+      a["Student ID"] == studentId &&
+      a["Class ID"] == classId &&
+      a["Date"] == date &&
+      a["username"] == username
+    );
     // Lấy header để xác định vị trí cột
     const resSheet = await sheets.spreadsheets.values.get({
       spreadsheetId: SHEET_ID,
       range: "Attendance",
     });
-    const headers = resSheet.data.values[0];
+    let headers = resSheet.data.values[0];
+    if (!headers.includes("username")) {
+      headers.push("username");
+      await sheets.spreadsheets.values.update({
+        spreadsheetId: SHEET_ID,
+        range: `Attendance!A1:Z1`,
+        valueInputOption: "USER_ENTERED",
+        requestBody: { values: [headers] },
+      });
+    }
     if (rowIndex !== -1) {
       // Nếu đã có, update bản ghi
       const updated = { ...attendance[rowIndex] };
       updated["Status"] = status;
       updated["Note"] = note || "";
       updated["timestamp"] = formatTimestampVN();
-      // Nếu có các trường khác muốn update thì thêm vào đây
+      updated["username"] = username;
       const rowValues = headers.map(h => updated[h] || "");
       await sheets.spreadsheets.values.update({
         spreadsheetId: SHEET_ID,
@@ -480,12 +495,15 @@ app.post("/api/attendance", async (req, res) => {
       return res.json({ success: true, updated: true });
     } else {
       // Nếu chưa có, thêm mới
+      const row = [studentId, studentName, classId, className, date, status, note || "", formatTimestampVN()];
+      while (row.length < headers.length - 1) row.push("");
+      row.push(username);
       await sheets.spreadsheets.values.append({
         spreadsheetId: SHEET_ID,
         range: "Attendance",
         valueInputOption: "USER_ENTERED",
         requestBody: {
-          values: [[studentId, studentName, classId, className, date, status, note || "", formatTimestampVN()]],
+          values: [row],
         },
       });
       return res.json({ success: true, created: true });
@@ -496,10 +514,11 @@ app.post("/api/attendance", async (req, res) => {
   }
 });
 
-// Lấy điểm danh của lớp theo ngày
+// Lấy điểm danh của lớp theo ngày, có thể lọc theo username
 app.get("/api/attendance/:classId/:date", async (req, res) => {
   try {
     const { classId, date } = req.params;
+    const { username } = req.query;
     const attendance = await getSheetData("Attendance");
     // Hàm chuẩn hóa ngày về dạng YYYY-MM-DD
     function normalizeDate(d) {
@@ -518,9 +537,12 @@ app.get("/api/attendance/:classId/:date", async (req, res) => {
       console.log('[DEBUG] Attendance row:', a["Class ID"], a.Date, '->', normalizeDate(a.Date));
     });
     const normDate = normalizeDate(date);
-    const filtered = attendance.filter(a =>
+    let filtered = attendance.filter(a =>
       (a["Class ID"] == classId) && normalizeDate(a.Date) == normDate
     );
+    if (username) {
+      filtered = filtered.filter(a => a.username === username);
+    }
     res.json(filtered);
   } catch (err) {
     console.error("[ERROR] /api/attendance/:classId/:date:", err);
