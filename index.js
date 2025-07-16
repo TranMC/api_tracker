@@ -56,6 +56,18 @@ async function getSheetData(sheetName) {
   });
 }
 
+// Hàm format timestamp về DD/MM/YYYY HH:mm:ss (giờ Việt Nam)
+function formatTimestampVN(date = new Date()) {
+  const d = new Date(date.getTime() + 7 * 60 * 60 * 1000); // UTC+7
+  const day = String(d.getDate()).padStart(2, '0');
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const year = d.getFullYear();
+  const hour = String(d.getHours()).padStart(2, '0');
+  const min = String(d.getMinutes()).padStart(2, '0');
+  const sec = String(d.getSeconds()).padStart(2, '0');
+  return `${day}/${month}/${year} ${hour}:${min}:${sec}`;
+}
+
 // API: /api/login (luôn dùng sheet 'accounts')
 app.post("/api/login", async (req, res) => {
   const { username, password } = req.body;
@@ -152,6 +164,7 @@ app.post("/api/classes", async (req, res) => {
 app.get("/api/classes", async (req, res) => {
   try {
     const classes = await getSheetData("Classes");
+    console.log("[DEBUG] Raw classes from sheet:", classes);
     const mapped = classes.map(item => ({
       ...item,
       id: item["Class ID"] || item.ID || item.Id || item.id,
@@ -317,7 +330,7 @@ app.post("/api/attendance", async (req, res) => {
       range: "Attendance",
       valueInputOption: "USER_ENTERED",
       requestBody: {
-        values: [[studentId, studentName, classId, className, date, status, note || "", new Date().toISOString()]],
+        values: [[studentId, studentName, classId, className, date, status, note || "", formatTimestampVN()]],
       },
     });
     res.json({ success: true });
@@ -337,6 +350,143 @@ app.get("/api/attendance/:classId/:date", async (req, res) => {
   } catch (err) {
     console.error("[ERROR] /api/attendance/:classId/:date:", err);
     res.status(500).json({ error: "Lỗi khi lấy điểm danh" });
+  }
+});
+
+// API: Lấy toàn bộ điểm danh
+app.get("/api/attendance", async (req, res) => {
+  try {
+    const attendance = await getSheetData("Attendance");
+    res.json(attendance);
+  } catch (err) {
+    console.error("[ERROR] /api/attendance:", err);
+    res.status(500).json({ error: "Lỗi khi lấy dữ liệu điểm danh" });
+  }
+});
+
+// PATCH attendance (sửa trạng thái/note)
+app.patch("/api/attendance/:attendanceId", async (req, res) => {
+  try {
+    const { attendanceId } = req.params;
+    const { status, note } = req.body;
+    // attendanceId có thể là tổ hợp studentId_classId_date
+    const [studentId, classId, date] = attendanceId.split("_");
+    const attendance = await getSheetData("Attendance");
+    const rowIndex = attendance.findIndex(a => a["Student ID"] == studentId && a["Class ID"] == classId && a["Date"] == date);
+    if (rowIndex === -1) {
+      return res.status(404).json({ error: "Không tìm thấy bản ghi điểm danh" });
+    }
+    // Lấy header để xác định vị trí cột
+    const resSheet = await sheets.spreadsheets.values.get({
+      spreadsheetId: SHEET_ID,
+      range: "Attendance",
+    });
+    const headers = resSheet.data.values[0];
+    // Chuẩn bị giá trị mới
+    const updated = { ...attendance[rowIndex] };
+    if (status !== undefined) updated.Status = status;
+    if (note !== undefined) updated.Note = note;
+    // Tạo mảng giá trị đúng thứ tự cột
+    const rowValues = headers.map(h => updated[h] || "");
+    // Ghi đè lại dòng trong sheet (rowIndex + 2 vì header là dòng 1)
+    await sheets.spreadsheets.values.update({
+      spreadsheetId: SHEET_ID,
+      range: `Attendance!A${rowIndex + 2}:Z${rowIndex + 2}`,
+      valueInputOption: "USER_ENTERED",
+      requestBody: { values: [rowValues] },
+    });
+    res.json({ success: true });
+  } catch (err) {
+    console.error("[ERROR] PATCH /api/attendance/:attendanceId:", err);
+    res.status(500).json({ error: "Lỗi khi cập nhật điểm danh" });
+  }
+});
+
+// DELETE attendance (xoá bản ghi)
+app.delete("/api/attendance/:attendanceId", async (req, res) => {
+  try {
+    const { attendanceId } = req.params;
+    const [studentId, classId, date] = attendanceId.split("_");
+    const attendance = await getSheetData("Attendance");
+    const rowIndex = attendance.findIndex(a => a["Student ID"] == studentId && a["Class ID"] == classId && a["Date"] == date);
+    if (rowIndex === -1) {
+      return res.status(404).json({ error: "Không tìm thấy bản ghi điểm danh" });
+    }
+    // Xoá dòng trong sheet (bằng cách ghi rỗng toàn bộ dòng)
+    const resSheet = await sheets.spreadsheets.values.get({
+      spreadsheetId: SHEET_ID,
+      range: "Attendance",
+    });
+    const headers = resSheet.data.values[0];
+    const emptyRow = headers.map(() => "");
+    await sheets.spreadsheets.values.update({
+      spreadsheetId: SHEET_ID,
+      range: `Attendance!A${rowIndex + 2}:Z${rowIndex + 2}`,
+      valueInputOption: "USER_ENTERED",
+      requestBody: { values: [emptyRow] },
+    });
+    res.json({ success: true });
+  } catch (err) {
+    console.error("[ERROR] DELETE /api/attendance/:attendanceId:", err);
+    res.status(500).json({ error: "Lỗi khi xoá điểm danh" });
+  }
+});
+
+// Lấy time slot của trợ giảng (không cần dayOfWeek)
+app.get("/api/checkin-time", async (req, res) => {
+  try {
+    const { username } = req.query;
+    const slots = await getSheetData("CheckInTime");
+    let filtered = slots;
+    if (username) filtered = filtered.filter(s => !s.username || s.username === username);
+    // Nếu có username thì lấy slot của user đó + slot chung (username rỗng)
+    filtered = filtered.map(s => ({
+      ...s,
+      startTime: s.startTime,
+      endTime: s.endTime,
+      label: s.label
+    }));
+    res.json(filtered);
+  } catch (err) {
+    console.error("[ERROR] /api/checkin-time:", err);
+    res.status(500).json({ error: "Lỗi khi lấy time slot" });
+  }
+});
+
+// Ghi log checkin
+app.post("/api/checkin-log", async (req, res) => {
+  try {
+    const { username, date, startTime, endTime, slotLabel, totalHours } = req.body;
+    if (!username || !date || !startTime || !endTime) {
+      return res.status(400).json({ error: "Thiếu thông tin checkin" });
+    }
+    await sheets.spreadsheets.values.append({
+      spreadsheetId: SHEET_ID,
+      range: "CheckInLog",
+      valueInputOption: "USER_ENTERED",
+      requestBody: {
+        values: [[username, date, startTime, endTime, slotLabel || "", totalHours || "", formatTimestampVN()]],
+      },
+    });
+    res.json({ success: true });
+  } catch (err) {
+    console.error("[ERROR] /api/checkin-log:", err);
+    res.status(500).json({ error: "Lỗi khi ghi log checkin" });
+  }
+});
+
+// Lấy log checkin của trợ giảng theo tháng
+app.get("/api/checkin-log", async (req, res) => {
+  try {
+    const { username, month } = req.query; // month: "2025-07"
+    const logs = await getSheetData("CheckInLog");
+    let filtered = logs;
+    if (username) filtered = filtered.filter(l => l.username === username);
+    if (month) filtered = filtered.filter(l => l.date && l.date.startsWith(month));
+    res.json(filtered);
+  } catch (err) {
+    console.error("[ERROR] /api/checkin-log (GET):", err);
+    res.status(500).json({ error: "Lỗi khi lấy log checkin" });
   }
 });
 
