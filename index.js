@@ -185,7 +185,9 @@ app.patch("/api/classes/:id", async (req, res) => {
     const { name, startTime, endTime, room, daysOfWeek, exceptionStudents } = req.body;
     // Lấy dữ liệu hiện tại
     const classes = await getSheetData("Classes");
-    const rowIndex = classes.findIndex(c => c.ID === id || c.Id === id || c.id === id);
+    const rowIndex = classes.findIndex(
+      c => c["Class ID"] === id || c.ID === id || c.Id === id || c.id === id
+    );
     if (rowIndex === -1) {
       return res.status(404).json({ error: "Không tìm thấy lớp học" });
     }
@@ -216,6 +218,37 @@ app.patch("/api/classes/:id", async (req, res) => {
   } catch (err) {
     console.error("[ERROR] PATCH /api/classes/:id:", err);
     res.status(500).json({ error: "Lỗi khi cập nhật lớp học" });
+  }
+});
+
+// DELETE class
+app.delete("/api/classes/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const classes = await getSheetData("Classes");
+    const rowIndex = classes.findIndex(
+      c => c["Class ID"] === id || c.ID === id || c.Id === id || c.id === id
+    );
+    if (rowIndex === -1) {
+      return res.status(404).json({ error: "Không tìm thấy lớp học" });
+    }
+    // Lấy header để xác định vị trí cột
+    const resSheet = await sheets.spreadsheets.values.get({
+      spreadsheetId: SHEET_ID,
+      range: "Classes",
+    });
+    const headers = resSheet.data.values[0];
+    const emptyRow = headers.map(() => "");
+    await sheets.spreadsheets.values.update({
+      spreadsheetId: SHEET_ID,
+      range: `Classes!A${rowIndex + 2}:Z${rowIndex + 2}`,
+      valueInputOption: "USER_ENTERED",
+      requestBody: { values: [emptyRow] },
+    });
+    res.json({ success: true });
+  } catch (err) {
+    console.error("[ERROR] DELETE /api/classes/:id:", err);
+    res.status(500).json({ error: "Lỗi khi xoá lớp học" });
   }
 });
 
@@ -301,6 +334,71 @@ app.patch("/api/students/:studentId", async (req, res) => {
   }
 });
 
+// PATCH student (sửa thông tin học sinh)
+app.patch("/api/students/:studentId", async (req, res) => {
+  try {
+    const { studentId } = req.params;
+    const { name, grade, email, classId } = req.body;
+    const students = await getSheetData("Students");
+    const rowIndex = students.findIndex(s => s["Student ID"] === studentId || s.studentId === studentId || s["Mã học sinh"] === studentId);
+    if (rowIndex === -1) {
+      return res.status(404).json({ error: "Không tìm thấy học sinh" });
+    }
+    // Lấy header để xác định vị trí cột
+    const resSheet = await sheets.spreadsheets.values.get({
+      spreadsheetId: SHEET_ID,
+      range: "Students",
+    });
+    const headers = resSheet.data.values[0];
+    // Chuẩn bị giá trị mới
+    const updated = { ...students[rowIndex] };
+    if (name !== undefined) updated.Name = name;
+    if (grade !== undefined) updated.Grade = grade;
+    if (email !== undefined) updated.Email = email;
+    if (classId !== undefined) updated["Class ID"] = classId;
+    const rowValues = headers.map(h => updated[h] || "");
+    await sheets.spreadsheets.values.update({
+      spreadsheetId: SHEET_ID,
+      range: `Students!A${rowIndex + 2}:Z${rowIndex + 2}`,
+      valueInputOption: "USER_ENTERED",
+      requestBody: { values: [rowValues] },
+    });
+    res.json({ success: true });
+  } catch (err) {
+    console.error("[ERROR] PATCH /api/students/:studentId:", err);
+    res.status(500).json({ error: "Lỗi khi cập nhật học sinh" });
+  }
+});
+
+// DELETE student
+app.delete("/api/students/:studentId", async (req, res) => {
+  try {
+    const { studentId } = req.params;
+    const students = await getSheetData("Students");
+    const rowIndex = students.findIndex(s => s["Student ID"] === studentId || s.studentId === studentId || s["Mã học sinh"] === studentId);
+    if (rowIndex === -1) {
+      return res.status(404).json({ error: "Không tìm thấy học sinh" });
+    }
+    // Lấy header để xác định vị trí cột
+    const resSheet = await sheets.spreadsheets.values.get({
+      spreadsheetId: SHEET_ID,
+      range: "Students",
+    });
+    const headers = resSheet.data.values[0];
+    const emptyRow = headers.map(() => "");
+    await sheets.spreadsheets.values.update({
+      spreadsheetId: SHEET_ID,
+      range: `Students!A${rowIndex + 2}:Z${rowIndex + 2}`,
+      valueInputOption: "USER_ENTERED",
+      requestBody: { values: [emptyRow] },
+    });
+    res.json({ success: true });
+  } catch (err) {
+    console.error("[ERROR] DELETE /api/students/:studentId:", err);
+    res.status(500).json({ error: "Lỗi khi xoá học sinh" });
+  }
+});
+
 // API: Lấy toàn bộ học sinh
 app.get("/api/students", async (req, res) => {
   try {
@@ -345,7 +443,26 @@ app.get("/api/attendance/:classId/:date", async (req, res) => {
   try {
     const { classId, date } = req.params;
     const attendance = await getSheetData("Attendance");
-    const filtered = attendance.filter(a => a["Class ID"] == classId && a.Date == date);
+    // Hàm chuẩn hóa ngày về dạng YYYY-MM-DD
+    function normalizeDate(d) {
+      if (!d) return "";
+      d = d.trim().replace(/\//g, "-");
+      // Nếu là DD-MM-YYYY thì chuyển về YYYY-MM-DD
+      const parts = d.split("-");
+      if (parts.length === 3 && parts[2].length === 4 && parts[0].length === 2) {
+        // DD-MM-YYYY
+        return `${parts[2]}-${parts[1].padStart(2, '0')}-${parts[0].padStart(2, '0')}`;
+      }
+      return d;
+    }
+    // Log dữ liệu thực tế
+    attendance.forEach(a => {
+      console.log('[DEBUG] Attendance row:', a["Class ID"], a.Date, '->', normalizeDate(a.Date));
+    });
+    const normDate = normalizeDate(date);
+    const filtered = attendance.filter(a =>
+      (a["Class ID"] == classId) && normalizeDate(a.Date) == normDate
+    );
     res.json(filtered);
   } catch (err) {
     console.error("[ERROR] /api/attendance/:classId/:date:", err);
