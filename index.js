@@ -76,12 +76,43 @@ app.post("/api/login", async (req, res) => {
     const accounts = await getSheetData("accounts");
     const user = accounts.find(acc => acc.username === username && acc.password === password);
     if (!user) return res.status(401).json({ error: "Sai tài khoản hoặc mật khẩu" });
-    // Trả về thông tin user (chỉ username và ratio)
-    const { username: u, ratio } = user;
-    res.json({ user: { username: u, ratio } });
+    // Trả về đầy đủ thông tin user
+    res.json({ user });
   } catch (err) {
     console.error("[ERROR] /api/login:", err);
     res.status(500).json({ error: "Lỗi server hoặc Google Sheet" });
+  }
+});
+
+// API: Cập nhật thông tin user (username, FullName, CustomTitle, password)
+app.post("/api/users/update", async (req, res) => {
+  try {
+    const { username, field, value } = req.body;
+    if (!username || !field) return res.status(400).json({ error: "Thiếu thông tin" });
+    const accounts = await getSheetData("accounts");
+    const rowIndex = accounts.findIndex(acc => acc.username === username);
+    if (rowIndex === -1) return res.status(404).json({ error: "Không tìm thấy user" });
+    // Lấy header để xác định vị trí cột
+    const resSheet = await sheets.spreadsheets.values.get({
+      spreadsheetId: SHEET_ID,
+      range: "accounts",
+    });
+    const headers = resSheet.data.values[0];
+    const updated = { ...accounts[rowIndex] };
+    updated[field] = value;
+    // Nếu đổi username thì cập nhật cả key
+    if (field === "username") updated.username = value;
+    const rowValues = headers.map(h => updated[h] || "");
+    await sheets.spreadsheets.values.update({
+      spreadsheetId: SHEET_ID,
+      range: `accounts!A${rowIndex + 2}:Z${rowIndex + 2}`,
+      valueInputOption: "USER_ENTERED",
+      requestBody: { values: [rowValues] },
+    });
+    res.json({ success: true });
+  } catch (err) {
+    console.error("[ERROR] /api/users/update:", err);
+    res.status(500).json({ error: "Lỗi khi cập nhật user" });
   }
 });
 
