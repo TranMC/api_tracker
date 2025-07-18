@@ -2,13 +2,24 @@ import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
 import { google } from "googleapis";
+import multer from "multer";
+import streamifier from "streamifier";
+import fs from "fs";
+import nodemailer from "nodemailer";
+import cron from "node-cron";
+import admin from "firebase-admin";
+import serviceAccount from "./student-tracker-7afed-firebase-adminsdk-fbsvc-ff9e706a85.json" assert { type: "json" };
+
+admin.initializeApp({
+  credential: admin.credential.cert(serviceAccount),
+});
 
 dotenv.config();
 
 const app = express();
 app.use(cors({
   origin: [
-    "http://localhost:5173",
+    "http://localhost:5174",
     "https://trackerstudent.netlify.app"
   ],
   credentials: true
@@ -17,15 +28,15 @@ app.use(express.json());
 
 // Middleware log request
 app.use((req, res, next) => {
-  console.log(`[${new Date().toISOString()}] ${req.method} ${req.originalUrl}`);
+  // console.log(`[${new Date().toISOString()}] ${req.method} ${req.originalUrl}`);
   if (Object.keys(req.body || {}).length > 0) {
-    console.log("  Body:", req.body);
+    // console.log("  Body:", req.body);
   }
   if (Object.keys(req.query || {}).length > 0) {
-    console.log("  Query:", req.query);
+    // console.log("  Query:", req.query);
   }
   if (Object.keys(req.params || {}).length > 0) {
-    console.log("  Params:", req.params);
+    // console.log("  Params:", req.params);
   }
   next();
 });
@@ -39,6 +50,27 @@ const auth = new google.auth.GoogleAuth({
   scopes: ["https://www.googleapis.com/auth/spreadsheets"],
 });
 const sheets = google.sheets({ version: "v4", auth });
+
+// Đọc credentials và token
+const CREDENTIALS_PATH = "./credentials.json";
+const TOKEN_PATH = "./token.json";
+
+const credentials = JSON.parse(fs.readFileSync(CREDENTIALS_PATH));
+const { client_id, client_secret, redirect_uris } = credentials.installed;
+
+const oAuth2Client = new google.auth.OAuth2(
+  client_id,
+  client_secret,
+  redirect_uris[0]
+);
+
+const token = JSON.parse(fs.readFileSync(TOKEN_PATH));
+oAuth2Client.setCredentials(token);
+
+const drive = google.drive({ version: "v3", auth: oAuth2Client });
+
+// Multer setup để nhận multipart/form-data
+const upload = multer({ storage: multer.memoryStorage() });
 
 // Helper: get data from any sheet
 async function getSheetData(sheetName) {
@@ -66,6 +98,25 @@ function formatTimestampVN(date = new Date()) {
   const min = String(d.getMinutes()).padStart(2, '0');
   const sec = String(d.getSeconds()).padStart(2, '0');
   return `${day}/${month}/${year} ${hour}:${min}:${sec}`;
+}
+
+// Hàm gửi email
+async function sendMail({ to, subject, text, html }) {
+  const transporter = nodemailer.createTransport({
+    service: "gmail",
+    auth: {
+      user: process.env.EMAIL_USER,
+      pass: process.env.EMAIL_PASS,
+    },
+  });
+  const info = await transporter.sendMail({
+    from: process.env.EMAIL_FROM,
+    to,
+    subject,
+    text,
+    html,
+  });
+  console.log("SendMail result:", info);
 }
 
 // API: /api/login (luôn dùng sheet 'accounts')
@@ -169,7 +220,7 @@ app.get("/api/classes/today", async (req, res) => {
 // API tạo lớp học
 app.post("/api/classes", async (req, res) => {
   try {
-    console.log("POST /api/classes body:", req.body);
+    // console.log("POST /api/classes body:", req.body);
     let { id, name, startTime, endTime, room } = req.body;
     if (!name || !startTime || !endTime) {
       return res.status(400).json({ error: "Thiếu thông tin lớp học" });
@@ -198,7 +249,7 @@ app.post("/api/classes", async (req, res) => {
 app.get("/api/classes", async (req, res) => {
   try {
     const classes = await getSheetData("Classes");
-    console.log("[DEBUG] Raw classes from sheet:", classes);
+    // console.log("[DEBUG] Raw classes from sheet:", classes);
     const mapped = classes.map(item => ({
       ...item,
       id: item["Class ID"] || item.ID || item.Id || item.id,
@@ -531,7 +582,7 @@ app.get("/api/attendance/:classId/:date", async (req, res) => {
       return d;
     }
     attendance.forEach(a => {
-      console.log('[DEBUG] Attendance row:', a["Class ID"], a.Date, '->', normalizeDate(a.Date));
+      // console.log('[DEBUG] Attendance row:', a["Class ID"], a.Date, '->', normalizeDate(a.Date));
     });
     const normDate = normalizeDate(date);
     let filtered = attendance.filter(a =>
@@ -868,7 +919,7 @@ app.post("/api/lesson-progress", async (req, res) => {
       range: "LessonProgress",
       valueInputOption: "USER_ENTERED",
       requestBody: {
-        values: [[Date, ClassID, LessonContent, LessonImages, HomeworkContent, HomeworkImages, HomeworkCheckDate, GeneralNote, NotificationSent || ""]],
+        values: [[Date, ClassID, LessonContent, LessonImages, HomeworkContent, HomeworkImages, HomeworkCheckDate, GeneralNote, NotificationSent || "", "", ""]], // Thêm cột Checked, Pushed
       },
     });
     res.json({ success: true });
@@ -894,6 +945,8 @@ app.patch("/api/lesson-progress/:rowIndex", async (req, res) => {
     if (HomeworkCheckDate !== undefined) updated.HomeworkCheckDate = HomeworkCheckDate;
     if (GeneralNote !== undefined) updated.GeneralNote = GeneralNote;
     if (NotificationSent !== undefined) updated.NotificationSent = NotificationSent;
+    if (req.body.Checked !== undefined) updated.Checked = req.body.Checked;
+    if (req.body.Pushed !== undefined) updated.Pushed = req.body.Pushed;
     const rowValues = headers.map(h => updated[h] || "");
     await sheets.spreadsheets.values.update({
       spreadsheetId: SHEET_ID,
@@ -936,10 +989,10 @@ app.get("/api/monthly-summary", async (req, res) => {
     if (classId) filtered = filtered.filter(s => String(s["Class ID"]) === String(classId));
     if (month) filtered = filtered.filter(s => String(s["Month"]) === String(month));
     if (username) filtered = filtered.filter(s => String(s["Username"]) === String(username));
-    console.log("[API] /api/monthly-summary query:", req.query);
-    console.log("[API] /api/monthly-summary headers:", Object.keys(data[0] || {}));
-    console.log("[API] /api/monthly-summary result count:", filtered.length);
-    console.log("[API] /api/monthly-summary result sample:", filtered[0]);
+    // console.log("[API] /api/monthly-summary query:", req.query);
+    // console.log("[API] /api/monthly-summary headers:", Object.keys(data[0] || {}));
+    // console.log("[API] /api/monthly-summary result count:", filtered.length);
+    // console.log("[API] /api/monthly-summary result sample:", filtered[0]);
     res.json(filtered);
   } catch (err) {
     console.error("[ERROR] /api/monthly-summary:", err);
@@ -1015,6 +1068,232 @@ app.delete("/api/monthly-summary/:rowIndex", async (req, res) => {
   } catch (err) {
     console.error("[ERROR] DELETE /api/monthly-summary/:rowIndex:", err);
     res.status(500).json({ error: "Lỗi khi xoá tổng kết điểm tháng" });
+  }
+});
+
+// API upload nhiều file lên Google Drive
+app.post("/api/upload-drive", upload.array("files"), async (req, res) => {
+  try {
+    if (!req.files || req.files.length === 0) return res.status(400).json({ error: "No files uploaded" });
+    const folderId = process.env.GOOGLE_DRIVE_FOLDER_ID || undefined; // Nếu muốn lưu vào folder cụ thể
+    const links = [];
+    for (const file of req.files) {
+      const driveRes = await drive.files.create({
+        requestBody: {
+          name: file.originalname,
+          mimeType: file.mimetype,
+          parents: folderId ? [folderId] : undefined,
+        },
+        media: {
+          mimeType: file.mimetype,
+          body: streamifier.createReadStream(file.buffer),
+        },
+        fields: "id,webViewLink,webContentLink",
+      });
+      // Set quyền public cho file
+      await drive.permissions.create({
+        fileId: driveRes.data.id,
+        requestBody: { role: "reader", type: "anyone" },
+      });
+      // Lấy link xem công khai
+      const fileMeta = await drive.files.get({ fileId: driveRes.data.id, fields: "webViewLink,webContentLink" });
+      links.push(fileMeta.data.webViewLink || fileMeta.data.webContentLink);
+    }
+    res.json({ links });
+  } catch (err) {
+    console.error("[ERROR] /api/upload-drive:", err);
+    res.status(500).json({ error: "Error uploading to Google Drive" });
+  }
+});
+
+// Cron job: mỗi phút kiểm tra LessonProgress để gửi email nhắc nhở trước giờ kiểm tra bài tập về nhà 10 phút
+cron.schedule("* * * * *", async () => {
+  try {
+    const lessonProgress = await getSheetData("LessonProgress");
+    const accounts = await getSheetData("accounts");
+    const now = new Date();
+    for (let i = 0; i < lessonProgress.length; i++) {
+      const lp = lessonProgress[i];
+      if (
+        lp.HomeworkCheckDate &&
+        lp.Checked !== "yes" &&
+        lp.NotificationSent !== "yes"
+      ) {
+        let checkDateStr = lp.HomeworkCheckDate.replace(" ", "T");
+        const checkDate = new Date(checkDateStr);
+        const diff = (checkDate.getTime() - now.getTime()) / 60000;
+        console.log(`[CRON] Lớp: ${lp.ClassID}, Date: ${lp.Date}, Checked: ${lp.Checked}, NotificationSent: ${lp.NotificationSent}, Còn cách trước khi gửi: ${diff}`);
+        if (diff > 9 && diff <= 10) {
+          // Lấy tài khoản đầu tiên có email
+          const teacher = accounts.find(acc => acc.email);
+          if (teacher && teacher.email) {
+            await sendMail({
+              to: teacher.email,
+              subject: "Nhắc kiểm tra bài tập về nhà",
+              text: `Bạn cần kiểm tra bài tập về nhà cho lớp ${lp.ClassID} ngày ${lp.Date}.`,
+              html: `
+    <div style="font-family: Arial, sans-serif; background: #f8fafc; padding: 24px;">
+      <div style="max-width: 480px; margin: auto; background: #fff; border-radius: 12px; box-shadow: 0 2px 8px #0001; padding: 24px;">
+        <h2 style="color: #2563eb; margin-bottom: 12px;">📚 Nhắc kiểm tra bài tập về nhà</h2>
+        <p style="font-size: 16px; color: #222;">
+          Xin chào <b>${teacher.FullName || teacher.username || ""}</b>,
+        </p>
+        <p style="font-size: 16px; color: #222;">
+          Bạn cần kiểm tra bài tập về nhà cho:
+        </p>
+        <table style="width: 100%; margin: 16px 0; border-collapse: collapse;">
+          <tr>
+            <td style="padding: 8px 0; color: #555;">Lớp:</td>
+            <td style="padding: 8px 0; font-weight: bold; color: #111;">${lp.ClassID}</td>
+          </tr>
+          <tr>
+            <td style="padding: 8px 0; color: #555;">Ngày học:</td>
+            <td style="padding: 8px 0; font-weight: bold; color: #111;">${lp.Date}</td>
+          </tr>
+          <tr>
+            <td style="padding: 8px 0; color: #555;">Nội dung BTVN:</td>
+            <td style="padding: 8px 0; color: #111;">${lp.HomeworkContent || "<i>Không có ghi chú</i>"}</td>
+          </tr>
+        </table>
+        <blockquote style="border-left: 4px solid #2563eb; margin: 16px 0; padding-left: 12px; color: #2563eb;">
+          <b>Thời gian kiểm tra:</b> ${lp.HomeworkCheckDate.replace('T', ' ')}
+        </blockquote>
+        <p style="font-size: 14px; color: #888; margin-top: 24px;">
+          — Student Tracker
+        </p>
+      </div>
+    </div>
+  `,
+            });
+            // Đánh dấu đã gửi thông báo
+            const resSheet = await sheets.spreadsheets.values.get({
+              spreadsheetId: SHEET_ID,
+              range: "LessonProgress",
+            });
+            const headers = resSheet.data.values[0];
+            const updated = { ...lp, NotificationSent: "yes" };
+            const rowValues = headers.map(h => updated[h] || "");
+            await sheets.spreadsheets.values.update({
+              spreadsheetId: SHEET_ID,
+              range: `LessonProgress!A${i + 2}:Z${i + 2}`,
+              valueInputOption: "USER_ENTERED",
+              requestBody: { values: [rowValues] },
+            });
+            console.log(`[EMAIL] Đã gửi nhắc nhở kiểm tra BTVN cho lớp ${lp.ClassID} ngày ${lp.Date}`);
+          }
+        }
+      }
+    }
+  } catch (err) {
+    console.error("[CRON EMAIL ERROR]", err);
+  }
+});
+
+// Cron job: mỗi phút kiểm tra LessonProgress để gửi push notification trước giờ kiểm tra bài tập về nhà 10 phút
+cron.schedule("* * * * *", async () => {
+  try {
+    const lessonProgress = await getSheetData("LessonProgress");
+    const accounts = await getSheetData("accounts");
+    const fcmTokens = await getSheetData("FCMTokens");
+    const now = new Date();
+    for (let i = 0; i < lessonProgress.length; i++) {
+      const lp = lessonProgress[i];
+      if (
+        lp.HomeworkCheckDate &&
+        lp.Checked !== "yes" &&
+        lp.Pushed !== "yes"
+      ) {
+        let checkDateStr = lp.HomeworkCheckDate.replace(" ", "T");
+        const checkDate = new Date(checkDateStr);
+        const diff = (checkDate.getTime() - now.getTime()) / 60000;
+        if (diff > 9 && diff <= 10) {
+          // Lấy tất cả token từ FCMTokens
+          const tokens = fcmTokens.map(row => row.token).filter(Boolean);
+          if (tokens.length > 0) {
+            const message = {
+              notification: {
+                title: "Nhắc kiểm tra bài tập về nhà",
+                body: `Bạn cần kiểm tra bài tập về nhà cho lớp ${lp.ClassID} ngày ${lp.Date}.`,
+              },
+              tokens,
+              webpush: {
+                fcmOptions: {
+                  link: "https://trackerstudent.netlify.app", // Link khi bấm vào notification
+                },
+              },
+            };
+            try {
+              const response = await admin.messaging().sendMulticast(message);
+              console.log("[PUSH] Đã gửi push notification cho lớp", lp.ClassID, "date", lp.Date, "result:", response.successCount, "/", tokens.length);
+              // Đánh dấu đã push
+              const resSheet = await sheets.spreadsheets.values.get({
+                spreadsheetId: SHEET_ID,
+                range: "LessonProgress",
+              });
+              const headers = resSheet.data.values[0];
+              const updated = { ...lp, Pushed: "yes" };
+              const rowValues = headers.map(h => updated[h] || "");
+              await sheets.spreadsheets.values.update({
+                spreadsheetId: SHEET_ID,
+                range: `LessonProgress!A${i + 2}:Z${i + 2}`,
+                valueInputOption: "USER_ENTERED",
+                requestBody: { values: [rowValues] },
+              });
+            } catch (err) {
+              console.error("[PUSH ERROR]", err);
+            }
+          }
+        }
+      }
+    }
+  } catch (err) {
+    console.error("[CRON PUSH ERROR]", err);
+  }
+});
+
+// Sửa endpoint /test-mail: lấy tài khoản đầu tiên có email
+app.get("/test-mail", async (req, res) => {
+  try {
+    console.log("EMAIL_USER:", process.env.EMAIL_USER);
+    console.log("EMAIL_PASS:", process.env.EMAIL_PASS ? "OK" : "MISSING");
+    console.log("EMAIL_FROM:", process.env.EMAIL_FROM);
+    const accounts = await getSheetData("accounts");
+    const teacher = accounts.find(acc => acc.email);
+    if (!teacher || !teacher.email) {
+      return res.status(404).json({ error: "Không tìm thấy email giáo viên trong sheet accounts" });
+    }
+    await sendMail({
+      to: teacher.email,
+      subject: "Test email",
+      text: "Đây là email test từ hệ thống Student Tracker.",
+      html: "<b>Đây là email test từ hệ thống Student Tracker.</b>",
+    });
+    res.json({ success: true, email: teacher.email });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// API lưu FCM token vào Google Sheet
+app.post("/api/save-fcm-token", async (req, res) => {
+  try {
+    const { token, username } = req.body;
+    if (!token || !username) return res.status(400).json({ error: "Thiếu token hoặc username" });
+
+    // Kiểm tra sheet FCMTokens đã có chưa, nếu chưa thì tạo mới
+    // Lưu: username, token, timestamp
+    await sheets.spreadsheets.values.append({
+      spreadsheetId: SHEET_ID,
+      range: "FCMTokens",
+      valueInputOption: "USER_ENTERED",
+      requestBody: {
+        values: [[username, token, new Date().toISOString()]],
+      },
+    });
+    res.json({ success: true });
+  } catch (err) {
+    console.error("[ERROR] /api/save-fcm-token:", err);
+    res.status(500).json({ error: "Lỗi khi lưu FCM token" });
   }
 });
 

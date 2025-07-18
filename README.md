@@ -1,4 +1,3 @@
-Chắc chắn rồi\! Dưới đây là nội dung của bạn đã được trang trí lại cho dễ đọc và dễ theo dõi hơn.
 
 -----
 
