@@ -8,10 +8,17 @@ import fs from "fs";
 import nodemailer from "nodemailer";
 import cron from "node-cron";
 import admin from "firebase-admin";
-import serviceAccount from "./student-tracker-7afed-firebase-adminsdk-fbsvc-ff9e706a85.json" assert { type: "json" };
+// Xoá dòng import serviceAccount
+// import serviceAccount from "./student-tracker-7afed-firebase-adminsdk-fbsvc-ff9e706a85.json" assert { type: "json" };
 
+// Đọc từng service account từ biến môi trường
+const serviceAccountSheets = JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT_JSON_SHEETS);
+const serviceAccountDrive = JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT_JSON_DRIVE);
+const serviceAccountFirebase = JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT_JSON_FIREBASE);
+
+// Khởi tạo Firebase Admin với service account riêng
 admin.initializeApp({
-  credential: admin.credential.cert(serviceAccount),
+  credential: admin.credential.cert(serviceAccountFirebase),
 });
 
 dotenv.config();
@@ -44,29 +51,23 @@ app.use((req, res, next) => {
 const PORT = process.env.PORT || 3001;
 const SHEET_ID = process.env.SHEET_ID;
 
-// Google Sheets API setup
-const auth = new google.auth.GoogleAuth({
-  credentials: JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT_JSON || "{}"),
+// Google Sheets API setup với service account riêng
+const authSheets = new google.auth.GoogleAuth({
+  credentials: serviceAccountSheets,
   scopes: ["https://www.googleapis.com/auth/spreadsheets"],
 });
-const sheets = google.sheets({ version: "v4", auth });
+const sheets = google.sheets({ version: "v4", auth: authSheets });
 
-// Đọc credentials và token
-const CREDENTIALS_PATH = "./credentials.json";
-const TOKEN_PATH = "./token.json";
-
-const credentials = JSON.parse(fs.readFileSync(CREDENTIALS_PATH));
+// Đọc credentials và token cho Google Drive OAuth2
+const credentials = JSON.parse(process.env.GOOGLE_DRIVE_OAUTH_CREDENTIALS);
 const { client_id, client_secret, redirect_uris } = credentials.installed;
-
 const oAuth2Client = new google.auth.OAuth2(
   client_id,
   client_secret,
   redirect_uris[0]
 );
-
-const token = JSON.parse(fs.readFileSync(TOKEN_PATH));
+const token = JSON.parse(process.env.GOOGLE_DRIVE_OAUTH_TOKEN);
 oAuth2Client.setCredentials(token);
-
 const drive = google.drive({ version: "v3", auth: oAuth2Client });
 
 // Multer setup để nhận multipart/form-data
