@@ -48,7 +48,7 @@ async function getSheetData(sheetName) {
   });
   const rows = res.data.values;
   if (!rows || rows.length < 2) return [];
-  const headers = rows[0];
+  const headers = rows[0].map(h => h.trim());
   return rows.slice(1).map(row => {
     const obj = {};
     headers.forEach((h, i) => (obj[h] = row[i] || ""));
@@ -120,7 +120,7 @@ app.post("/api/users/update", async (req, res) => {
 app.get("/api/dashboard/stats", async (req, res) => {
   try {
     const today = new Date().toISOString().split("T")[0];
-    const attendance = await getSheetData("Attendance");
+    const attendance = await getSheetData("AttendanceCriteria");
     let present = 0;
     let absent = 0;
     attendance.forEach(a => {
@@ -445,70 +445,70 @@ app.get("/api/students", async (req, res) => {
   }
 });
 
-// Ghi điểm danh (upsert, theo studentId, classId, date, username)
-app.post("/api/attendance", async (req, res) => {
+// API: Điểm danh và tiêu chí (AttendanceCriteria, merge logic cũ + mới)
+app.post("/api/attendance-criteria", async (req, res) => {
   try {
-    const { studentId, studentName, classId, className, date, status, note, username } = req.body;
-    if (!studentId || !studentName || !classId || !className || !date || !status || !username) {
-      return res.status(400).json({ error: "Thiếu thông tin điểm danh hoặc username" });
-    }
-    // Lấy dữ liệu attendance hiện tại
-    const attendance = await getSheetData("Attendance");
-    // Tìm bản ghi trùng cả 4 trường
-    const rowIndex = attendance.findIndex(a =>
-      a["Student ID"] == studentId &&
-      a["Class ID"] == classId &&
-      a["Date"] == date &&
-      a["username"] == username
-    );
-    // Lấy header để xác định vị trí cột
-    const resSheet = await sheets.spreadsheets.values.get({
+    const fields = [
+      "StudentID", "StudentName", "ClassID", "ClassName", "Date", "Status", "Attitude", "Homework", "Worksheet", "Notebook", "Attendance", "TotalScore", "Note", "Timestamp", "username"
+    ];
+    const row = fields.map(f => req.body[f] !== undefined ? req.body[f] : "");
+    await sheets.spreadsheets.values.append({
       spreadsheetId: SHEET_ID,
-      range: "Attendance",
+      range: "AttendanceCriteria",
+      valueInputOption: "USER_ENTERED",
+      requestBody: { values: [row] },
     });
-    let headers = resSheet.data.values[0];
-    if (!headers.includes("username")) {
-      headers.push("username");
-      await sheets.spreadsheets.values.update({
-        spreadsheetId: SHEET_ID,
-        range: `Attendance!A1:Z1`,
-        valueInputOption: "USER_ENTERED",
-        requestBody: { values: [headers] },
-      });
-    }
-    if (rowIndex !== -1) {
-      // Nếu đã có, update bản ghi
-      const updated = { ...attendance[rowIndex] };
-      updated["Status"] = status;
-      updated["Note"] = note || "";
-      updated["timestamp"] = formatTimestampVN();
-      updated["username"] = username;
+    res.json({ success: true });
+  } catch (err) {
+    console.error("[ERROR] POST /api/attendance-criteria:", err);
+    res.status(500).json({ error: "Error saving attendance/criteria" });
+  }
+});
+
+// API: Upsert attendance/criteria (update nếu có, append nếu chưa)
+app.post("/api/attendance-criteria/upsert", async (req, res) => {
+  try {
+    const fields = [
+      "Student ID", "StudentName", "Class ID", "ClassName", "Date", "Status", "Attitude", "Homework", "Worksheet", "Notebook", "TotalScore", "Note", "Timestamp", "username"
+    ];
+    const data = await getSheetData("AttendanceCriteria");
+    const { "Student ID": studentId, "Class ID": classId, Date: date, username } = req.body;
+    const idx = data.findIndex(r =>
+      r["Student ID"] === studentId &&
+      r["Class ID"] === classId &&
+      r["Date"] === date &&
+      r["username"] === username
+    );
+    if (idx !== -1) {
+      // Update
+      const resSheet = await sheets.spreadsheets.values.get({ spreadsheetId: SHEET_ID, range: "AttendanceCriteria" });
+      const headers = resSheet.data.values[0];
+      const updated = { ...data[idx] };
+      for (const key in req.body) {
+        if (headers.includes(key)) updated[key] = req.body[key];
+      }
       const rowValues = headers.map(h => updated[h] || "");
       await sheets.spreadsheets.values.update({
         spreadsheetId: SHEET_ID,
-        range: `Attendance!A${rowIndex + 2}:Z${rowIndex + 2}`,
+        range: `AttendanceCriteria!A${idx + 2}:Z${idx + 2}`,
         valueInputOption: "USER_ENTERED",
         requestBody: { values: [rowValues] },
       });
       return res.json({ success: true, updated: true });
     } else {
-      // Nếu chưa có, thêm mới
-      const row = [studentId, studentName, classId, className, date, status, note || "", formatTimestampVN()];
-      while (row.length < headers.length - 1) row.push("");
-      row.push(username);
+      // Insert
+      const row = fields.map(f => req.body[f] !== undefined ? req.body[f] : "");
       await sheets.spreadsheets.values.append({
         spreadsheetId: SHEET_ID,
-        range: "Attendance",
+        range: "AttendanceCriteria",
         valueInputOption: "USER_ENTERED",
-        requestBody: {
-          values: [row],
-        },
+        requestBody: { values: [row] },
       });
       return res.json({ success: true, created: true });
     }
   } catch (err) {
-    console.error("[ERROR] /api/attendance:", err);
-    res.status(500).json({ error: "Lỗi khi ghi điểm danh" });
+    console.error("[ERROR] /api/attendance-criteria/upsert:", err);
+    res.status(500).json({ error: "Error upserting attendance/criteria" });
   }
 });
 
@@ -517,7 +517,7 @@ app.get("/api/attendance/:classId/:date", async (req, res) => {
   try {
     const { classId, date } = req.params;
     const { username } = req.query;
-    const attendance = await getSheetData("Attendance");
+    const attendance = await getSheetData("AttendanceCriteria");
     // Hàm chuẩn hóa ngày về dạng YYYY-MM-DD
     function normalizeDate(d) {
       if (!d) return "";
@@ -530,7 +530,6 @@ app.get("/api/attendance/:classId/:date", async (req, res) => {
       }
       return d;
     }
-    // Log dữ liệu thực tế
     attendance.forEach(a => {
       console.log('[DEBUG] Attendance row:', a["Class ID"], a.Date, '->', normalizeDate(a.Date));
     });
@@ -551,7 +550,7 @@ app.get("/api/attendance/:classId/:date", async (req, res) => {
 // API: Lấy toàn bộ điểm danh
 app.get("/api/attendance", async (req, res) => {
   try {
-    const attendance = await getSheetData("Attendance");
+    const attendance = await getSheetData("AttendanceCriteria");
     res.json(attendance);
   } catch (err) {
     console.error("[ERROR] /api/attendance:", err);
@@ -566,7 +565,7 @@ app.patch("/api/attendance/:attendanceId", async (req, res) => {
     const { status, note } = req.body;
     // attendanceId có thể là tổ hợp studentId_classId_date
     const [studentId, classId, date] = attendanceId.split("_");
-    const attendance = await getSheetData("Attendance");
+    const attendance = await getSheetData("AttendanceCriteria");
     const rowIndex = attendance.findIndex(a => a["Student ID"] == studentId && a["Class ID"] == classId && a["Date"] == date);
     if (rowIndex === -1) {
       return res.status(404).json({ error: "Không tìm thấy bản ghi điểm danh" });
@@ -574,7 +573,7 @@ app.patch("/api/attendance/:attendanceId", async (req, res) => {
     // Lấy header để xác định vị trí cột
     const resSheet = await sheets.spreadsheets.values.get({
       spreadsheetId: SHEET_ID,
-      range: "Attendance",
+      range: "AttendanceCriteria",
     });
     const headers = resSheet.data.values[0];
     // Chuẩn bị giá trị mới
@@ -586,7 +585,7 @@ app.patch("/api/attendance/:attendanceId", async (req, res) => {
     // Ghi đè lại dòng trong sheet (rowIndex + 2 vì header là dòng 1)
     await sheets.spreadsheets.values.update({
       spreadsheetId: SHEET_ID,
-      range: `Attendance!A${rowIndex + 2}:Z${rowIndex + 2}`,
+      range: `AttendanceCriteria!A${rowIndex + 2}:Z${rowIndex + 2}`,
       valueInputOption: "USER_ENTERED",
       requestBody: { values: [rowValues] },
     });
@@ -602,7 +601,7 @@ app.delete("/api/attendance/:attendanceId", async (req, res) => {
   try {
     const { attendanceId } = req.params;
     const [studentId, classId, date] = attendanceId.split("_");
-    const attendance = await getSheetData("Attendance");
+    const attendance = await getSheetData("AttendanceCriteria");
     const rowIndex = attendance.findIndex(a => a["Student ID"] == studentId && a["Class ID"] == classId && a["Date"] == date);
     if (rowIndex === -1) {
       return res.status(404).json({ error: "Không tìm thấy bản ghi điểm danh" });
@@ -610,13 +609,13 @@ app.delete("/api/attendance/:attendanceId", async (req, res) => {
     // Xoá dòng trong sheet (bằng cách ghi rỗng toàn bộ dòng)
     const resSheet = await sheets.spreadsheets.values.get({
       spreadsheetId: SHEET_ID,
-      range: "Attendance",
+      range: "AttendanceCriteria",
     });
     const headers = resSheet.data.values[0];
     const emptyRow = headers.map(() => "");
     await sheets.spreadsheets.values.update({
       spreadsheetId: SHEET_ID,
-      range: `Attendance!A${rowIndex + 2}:Z${rowIndex + 2}`,
+      range: `AttendanceCriteria!A${rowIndex + 2}:Z${rowIndex + 2}`,
       valueInputOption: "USER_ENTERED",
       requestBody: { values: [emptyRow] },
     });
@@ -682,6 +681,340 @@ app.get("/api/checkin-log", async (req, res) => {
   } catch (err) {
     console.error("[ERROR] /api/checkin-log (GET):", err);
     res.status(500).json({ error: "Lỗi khi lấy log checkin" });
+  }
+});
+
+// API: Quản lý điểm số học sinh
+app.get("/api/scores", async (req, res) => {
+  try {
+    const { classId, month } = req.query;
+    const scores = await getSheetData("Scores");
+    let filtered = scores;
+    if (classId) filtered = filtered.filter(s => String(s.classId || s["Class ID"]) === String(classId));
+    if (month) filtered = filtered.filter(s => (s.month || s["Month"]) === month);
+    res.json(filtered);
+  } catch (err) {
+    console.error("[ERROR] /api/scores:", err);
+    res.status(500).json({ error: "Lỗi khi lấy điểm số" });
+  }
+});
+
+app.post("/api/scores", async (req, res) => {
+  try {
+    const { studentId, classId, month, score, note } = req.body;
+    if (!studentId || !classId || !month) {
+      return res.status(400).json({ error: "Thiếu thông tin bắt buộc" });
+    }
+    await sheets.spreadsheets.values.append({
+      spreadsheetId: SHEET_ID,
+      range: "Scores",
+      valueInputOption: "USER_ENTERED",
+      requestBody: {
+        values: [[studentId, classId, month, score, note || ""]],
+      },
+    });
+    res.json({ success: true });
+  } catch (err) {
+    console.error("[ERROR] POST /api/scores:", err);
+    res.status(500).json({ error: "Lỗi khi lưu điểm số" });
+  }
+});
+
+app.patch("/api/scores/:rowIndex", async (req, res) => {
+  try {
+    const { rowIndex } = req.params;
+    const { score, note } = req.body;
+    const scores = await getSheetData("Scores");
+    if (!scores[rowIndex]) return res.status(404).json({ error: "Không tìm thấy bản ghi điểm" });
+    // Lấy header để xác định vị trí cột
+    const resSheet = await sheets.spreadsheets.values.get({
+      spreadsheetId: SHEET_ID,
+      range: "Scores",
+    });
+    const headers = resSheet.data.values[0];
+    const updated = { ...scores[rowIndex] };
+    if (score !== undefined) updated.Score = score;
+    if (note !== undefined) updated.Note = note;
+    const rowValues = headers.map(h => updated[h] || "");
+    await sheets.spreadsheets.values.update({
+      spreadsheetId: SHEET_ID,
+      range: `Scores!A${Number(rowIndex) + 2}:Z${Number(rowIndex) + 2}`,
+      valueInputOption: "USER_ENTERED",
+      requestBody: { values: [rowValues] },
+    });
+    res.json({ success: true });
+  } catch (err) {
+    console.error("[ERROR] PATCH /api/scores/:rowIndex:", err);
+    res.status(500).json({ error: "Lỗi khi cập nhật điểm số" });
+  }
+});
+
+app.delete("/api/scores/:rowIndex", async (req, res) => {
+  try {
+    const { rowIndex } = req.params;
+    // Lấy header để xác định vị trí cột
+    const resSheet = await sheets.spreadsheets.values.get({
+      spreadsheetId: SHEET_ID,
+      range: "Scores",
+    });
+    const headers = resSheet.data.values[0];
+    const emptyRow = headers.map(() => "");
+    await sheets.spreadsheets.values.update({
+      spreadsheetId: SHEET_ID,
+      range: `Scores!A${Number(rowIndex) + 2}:Z${Number(rowIndex) + 2}`,
+      valueInputOption: "USER_ENTERED",
+      requestBody: { values: [emptyRow] },
+    });
+    res.json({ success: true });
+  } catch (err) {
+    console.error("[ERROR] DELETE /api/scores/:rowIndex:", err);
+    res.status(500).json({ error: "Lỗi khi xoá điểm số" });
+  }
+});
+
+// API: AttendanceCriteria (điểm danh + đánh giá tiêu chí)
+app.get("/api/attendance-criteria", async (req, res) => {
+  try {
+    const { studentId, classId, date, username } = req.query;
+    const data = await getSheetData("AttendanceCriteria");
+    // Nếu có đủ 4 trường, trả về rowIndex (giữ nguyên)
+    if (studentId && classId && date && username) {
+      const idx = data.findIndex(r =>
+        (r["Student ID"] === studentId) &&
+        (r["Class ID"] === classId) &&
+        (r["Date"] === date) &&
+        (r["username"] === username)
+      );
+      if (idx !== -1) return res.json({ rowIndex: idx });
+      return res.json({ rowIndex: null });
+    }
+    // Nếu có username, chỉ trả về bản ghi của user đó
+    if (username) {
+      return res.json(data.filter(r => (r["username"] || "").trim() === username));
+    }
+    // Nếu không có username, trả về toàn bộ (chỉ dành cho admin)
+    res.json(data);
+  } catch (err) {
+    console.error("[ERROR] /api/attendance-criteria (GET):", err);
+    res.status(500).json({ error: "Error fetching attendance criteria" });
+  }
+});
+
+app.patch("/api/attendance-criteria/:rowIndex", async (req, res) => {
+  try {
+    const { rowIndex } = req.params;
+    const data = await getSheetData("AttendanceCriteria");
+    if (!data[rowIndex]) return res.status(404).json({ error: "Not found" });
+    const resSheet = await sheets.spreadsheets.values.get({ spreadsheetId: SHEET_ID, range: "AttendanceCriteria" });
+    const headers = resSheet.data.values[0];
+    const updated = { ...data[rowIndex] };
+    for (const key in req.body) {
+      if (headers.includes(key)) updated[key] = req.body[key];
+    }
+    const rowValues = headers.map(h => updated[h] || "");
+    await sheets.spreadsheets.values.update({
+      spreadsheetId: SHEET_ID,
+      range: `AttendanceCriteria!A${Number(rowIndex) + 2}:Z${Number(rowIndex) + 2}`,
+      valueInputOption: "USER_ENTERED",
+      requestBody: { values: [rowValues] },
+    });
+    res.json({ success: true });
+  } catch (err) {
+    console.error("[ERROR] PATCH /api/attendance-criteria/:rowIndex:", err);
+    res.status(500).json({ error: "Error updating attendance criteria" });
+  }
+});
+
+app.delete("/api/attendance-criteria/:rowIndex", async (req, res) => {
+  try {
+    const { rowIndex } = req.params;
+    const resSheet = await sheets.spreadsheets.values.get({ spreadsheetId: SHEET_ID, range: "AttendanceCriteria" });
+    const headers = resSheet.data.values[0];
+    const emptyRow = headers.map(() => "");
+    await sheets.spreadsheets.values.update({
+      spreadsheetId: SHEET_ID,
+      range: `AttendanceCriteria!A${Number(rowIndex) + 2}:Z${Number(rowIndex) + 2}`,
+      valueInputOption: "USER_ENTERED",
+      requestBody: { values: [emptyRow] },
+    });
+    res.json({ success: true });
+  } catch (err) {
+    console.error("[ERROR] DELETE /api/attendance-criteria/:rowIndex:", err);
+    res.status(500).json({ error: "Error deleting attendance criteria" });
+  }
+});
+
+// API: LessonProgress (ghi chú buổi học, ảnh, bài tập về nhà, lịch kiểm tra, note)
+app.get("/api/lesson-progress", async (req, res) => {
+  try {
+    const { classId, date } = req.query;
+    const data = await getSheetData("LessonProgress");
+    let filtered = data;
+    if (classId) filtered = filtered.filter(r => String(r.ClassID) === String(classId));
+    if (date) filtered = filtered.filter(r => r.Date === date);
+    res.json(filtered);
+  } catch (err) {
+    console.error("[ERROR] /api/lesson-progress:", err);
+    res.status(500).json({ error: "Error fetching lesson progress" });
+  }
+});
+
+app.post("/api/lesson-progress", async (req, res) => {
+  try {
+    const { Date, ClassID, LessonContent, LessonImages, HomeworkContent, HomeworkImages, HomeworkCheckDate, GeneralNote, NotificationSent } = req.body;
+    if (!Date || !ClassID) return res.status(400).json({ error: "Missing required fields" });
+    await sheets.spreadsheets.values.append({
+      spreadsheetId: SHEET_ID,
+      range: "LessonProgress",
+      valueInputOption: "USER_ENTERED",
+      requestBody: {
+        values: [[Date, ClassID, LessonContent, LessonImages, HomeworkContent, HomeworkImages, HomeworkCheckDate, GeneralNote, NotificationSent || ""]],
+      },
+    });
+    res.json({ success: true });
+  } catch (err) {
+    console.error("[ERROR] POST /api/lesson-progress:", err);
+    res.status(500).json({ error: "Error saving lesson progress" });
+  }
+});
+
+app.patch("/api/lesson-progress/:rowIndex", async (req, res) => {
+  try {
+    const { rowIndex } = req.params;
+    const { LessonContent, LessonImages, HomeworkContent, HomeworkImages, HomeworkCheckDate, GeneralNote, NotificationSent } = req.body;
+    const data = await getSheetData("LessonProgress");
+    if (!data[rowIndex]) return res.status(404).json({ error: "Not found" });
+    const resSheet = await sheets.spreadsheets.values.get({ spreadsheetId: SHEET_ID, range: "LessonProgress" });
+    const headers = resSheet.data.values[0];
+    const updated = { ...data[rowIndex] };
+    if (LessonContent !== undefined) updated.LessonContent = LessonContent;
+    if (LessonImages !== undefined) updated.LessonImages = LessonImages;
+    if (HomeworkContent !== undefined) updated.HomeworkContent = HomeworkContent;
+    if (HomeworkImages !== undefined) updated.HomeworkImages = HomeworkImages;
+    if (HomeworkCheckDate !== undefined) updated.HomeworkCheckDate = HomeworkCheckDate;
+    if (GeneralNote !== undefined) updated.GeneralNote = GeneralNote;
+    if (NotificationSent !== undefined) updated.NotificationSent = NotificationSent;
+    const rowValues = headers.map(h => updated[h] || "");
+    await sheets.spreadsheets.values.update({
+      spreadsheetId: SHEET_ID,
+      range: `LessonProgress!A${Number(rowIndex) + 2}:Z${Number(rowIndex) + 2}`,
+      valueInputOption: "USER_ENTERED",
+      requestBody: { values: [rowValues] },
+    });
+    res.json({ success: true });
+  } catch (err) {
+    console.error("[ERROR] PATCH /api/lesson-progress/:rowIndex:", err);
+    res.status(500).json({ error: "Error updating lesson progress" });
+  }
+});
+
+app.delete("/api/lesson-progress/:rowIndex", async (req, res) => {
+  try {
+    const { rowIndex } = req.params;
+    const resSheet = await sheets.spreadsheets.values.get({ spreadsheetId: SHEET_ID, range: "LessonProgress" });
+    const headers = resSheet.data.values[0];
+    const emptyRow = headers.map(() => "");
+    await sheets.spreadsheets.values.update({
+      spreadsheetId: SHEET_ID,
+      range: `LessonProgress!A${Number(rowIndex) + 2}:Z${Number(rowIndex) + 2}`,
+      valueInputOption: "USER_ENTERED",
+      requestBody: { values: [emptyRow] },
+    });
+    res.json({ success: true });
+  } catch (err) {
+    console.error("[ERROR] DELETE /api/lesson-progress/:rowIndex:", err);
+    res.status(500).json({ error: "Error deleting lesson progress" });
+  }
+});
+
+// API: Tổng kết điểm tháng (MonthlySummary)
+app.get("/api/monthly-summary", async (req, res) => {
+  try {
+    const { classId, month, username } = req.query;
+    const data = await getSheetData("MonthlySummary");
+    let filtered = data;
+    if (classId) filtered = filtered.filter(s => String(s["Class ID"]) === String(classId));
+    if (month) filtered = filtered.filter(s => String(s["Month"]) === String(month));
+    if (username) filtered = filtered.filter(s => String(s["Username"]) === String(username));
+    console.log("[API] /api/monthly-summary query:", req.query);
+    console.log("[API] /api/monthly-summary headers:", Object.keys(data[0] || {}));
+    console.log("[API] /api/monthly-summary result count:", filtered.length);
+    console.log("[API] /api/monthly-summary result sample:", filtered[0]);
+    res.json(filtered);
+  } catch (err) {
+    console.error("[ERROR] /api/monthly-summary:", err);
+    res.status(500).json({ error: "Lỗi khi lấy tổng kết điểm tháng" });
+  }
+});
+
+app.post("/api/monthly-summary", async (req, res) => {
+  try {
+    const { studentId, classId, month, examScore, attendanceScore, note, finalScore, username } = req.body;
+    if (!studentId || !classId || !month) {
+      return res.status(400).json({ error: "Thiếu thông tin bắt buộc" });
+    }
+    await sheets.spreadsheets.values.append({
+      spreadsheetId: SHEET_ID,
+      range: "MonthlySummary",
+      valueInputOption: "USER_ENTERED",
+      requestBody: {
+        values: [[studentId, classId, month, examScore, attendanceScore, note || "", finalScore || "", username || ""]],
+      },
+    });
+    res.json({ success: true });
+  } catch (err) {
+    console.error("[ERROR] POST /api/monthly-summary:", err);
+    res.status(500).json({ error: "Lỗi khi lưu tổng kết điểm tháng" });
+  }
+});
+
+app.patch("/api/monthly-summary/:rowIndex", async (req, res) => {
+  try {
+    const { rowIndex } = req.params;
+    const { examScore, attendanceScore, note, finalScore } = req.body;
+    const data = await getSheetData("MonthlySummary");
+    if (!data[rowIndex]) return res.status(404).json({ error: "Không tìm thấy bản ghi tổng kết" });
+    // Lấy header để xác định vị trí cột
+    const resSheet = await sheets.spreadsheets.values.get({
+      spreadsheetId: SHEET_ID,
+      range: "MonthlySummary",
+    });
+    const headers = resSheet.data.values[0];
+    const updated = { ...data[rowIndex] };
+    if (examScore !== undefined) updated["Exam Score"] = examScore;
+    if (attendanceScore !== undefined) updated["Attendance Score"] = attendanceScore;
+    if (note !== undefined) updated["Note"] = note;
+    if (finalScore !== undefined) updated["Final Score"] = finalScore;
+    const rowValues = headers.map(h => updated[h] || "");
+    await sheets.spreadsheets.values.update({
+      spreadsheetId: SHEET_ID,
+      range: `MonthlySummary!A${Number(rowIndex) + 2}:Z${Number(rowIndex) + 2}`,
+      valueInputOption: "USER_ENTERED",
+      requestBody: { values: [rowValues] },
+    });
+    res.json({ success: true });
+  } catch (err) {
+    console.error("[ERROR] PATCH /api/monthly-summary/:rowIndex:", err);
+    res.status(500).json({ error: "Lỗi khi cập nhật tổng kết điểm tháng" });
+  }
+});
+
+app.delete("/api/monthly-summary/:rowIndex", async (req, res) => {
+  try {
+    const { rowIndex } = req.params;
+    const resSheet = await sheets.spreadsheets.values.get({ spreadsheetId: SHEET_ID, range: "MonthlySummary" });
+    const headers = resSheet.data.values[0];
+    const emptyRow = headers.map(() => "");
+    await sheets.spreadsheets.values.update({
+      spreadsheetId: SHEET_ID,
+      range: `MonthlySummary!A${Number(rowIndex) + 2}:Z${Number(rowIndex) + 2}`,
+      valueInputOption: "USER_ENTERED",
+      requestBody: { values: [emptyRow] },
+    });
+    res.json({ success: true });
+  } catch (err) {
+    console.error("[ERROR] DELETE /api/monthly-summary/:rowIndex:", err);
+    res.status(500).json({ error: "Lỗi khi xoá tổng kết điểm tháng" });
   }
 });
 
