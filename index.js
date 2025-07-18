@@ -8,6 +8,10 @@ import fs from "fs";
 import nodemailer from "nodemailer";
 import cron from "node-cron";
 import admin from "firebase-admin";
+import PDFDocument from "pdfkit";
+import path from "path";
+import os from "os";
+import { fileURLToPath } from 'url';
 // Xoá dòng import serviceAccount
 // import serviceAccount from "./student-tracker-7afed-firebase-adminsdk-fbsvc-ff9e706a85.json" assert { type: "json" };
 dotenv.config();
@@ -106,7 +110,7 @@ function formatTimestampVN(date = new Date()) {
 }
 
 // Hàm gửi email
-async function sendMail({ to, subject, text, html }) {
+async function sendMail({ to, subject, text, html, attachments }) {
   const transporter = nodemailer.createTransport({
     service: "gmail",
     auth: {
@@ -120,6 +124,7 @@ async function sendMail({ to, subject, text, html }) {
     subject,
     text,
     html,
+    attachments,
   });
   console.log("SendMail result:", info);
 }
@@ -1108,6 +1113,195 @@ app.post("/api/upload-drive", upload.array("files"), async (req, res) => {
   } catch (err) {
     console.error("[ERROR] /api/upload-drive:", err);
     res.status(500).json({ error: "Error uploading to Google Drive" });
+  }
+});
+
+// === CRON JOB: Tổng kết điểm tháng tự động vào ngày đầu tháng ===
+cron.schedule('10 0 1 * *', async () => {
+  try {
+    const now = new Date();
+    // Lấy tháng trước (vì đầu tháng mới tổng kết tháng cũ)
+    let year = now.getMonth() === 0 ? now.getFullYear() - 1 : now.getFullYear();
+    let month = now.getMonth() === 0 ? 12 : now.getMonth();
+    const monthStr = `${year}-${String(month).padStart(2, '0')}`;
+    console.log(`[CRON] Bắt đầu tổng kết điểm tháng ${monthStr}`);
+
+    // Lấy danh sách lớp
+    const classes = await getSheetData('Classes');
+    // Lấy toàn bộ học sinh
+    const students = await getSheetData('Students');
+    // Lấy toàn bộ điểm thi tháng
+    const scores = await getSheetData('Scores');
+    // Lấy toàn bộ điểm đánh giá theo buổi
+    const attendance = await getSheetData('AttendanceCriteria');
+    // Lấy tổng kết đã có để tránh ghi trùng
+    const monthlySummaries = await getSheetData('MonthlySummary');
+
+    // Tổng hợp cho báo cáo PDF
+    let reportRows = [];
+    let totalSessions = 0, goodCount = 0, fairCount = 0, averageCount = 0;
+    // Đếm số buổi và nhận xét
+    const attRowsInMonth = attendance.filter(a => (a['Date'] || '').startsWith(monthStr));
+    totalSessions = attRowsInMonth.length;
+    for (const a of attRowsInMonth) {
+      const score = parseInt(a['TotalScore'] || 0);
+      if (score === 100) goodCount++;
+      else if (score === 75) fairCount++;
+      else if (score === 50) averageCount++;
+    }
+
+    for (const cls of classes) {
+      const classId = cls['Class ID'] || cls.ID || cls.Id || cls.id;
+      if (!classId) continue;
+      const className = cls['Name'] || cls.name || classId;
+      // Lấy học sinh thuộc lớp này
+      const classStudents = students.filter(s => {
+        const classIds = (s['Class ID'] || s.classId || '').split(',').map(x => x.trim());
+        return classIds.includes(classId);
+      });
+      for (const stu of classStudents) {
+        const studentId = stu['Student ID'] || stu.studentId || stu.id;
+        const studentName = stu['Name'] || stu.name || studentId;
+        if (!studentId) continue;
+        // Lấy điểm thi tháng
+        const scoreRow = scores.find(s => String(s['studentId'] || s['Student ID']) === String(studentId) && String(s['classId'] || s['Class ID']) === String(classId) && String(s['month'] || s['Month']) === monthStr);
+        const examScore = scoreRow ? Number(scoreRow['score'] || scoreRow['Score'] || 0) : 0;
+        // Lấy điểm đánh giá theo buổi: trung bình TotalScore của học sinh trong tháng đó
+        const attRows = attendance.filter(a => String(a['Student ID']) === String(studentId) && String(a['Class ID']) === String(classId) && (a['Date'] || '').startsWith(monthStr));
+        let attendanceScore = 0;
+        if (attRows.length > 0) {
+          const total = attRows.reduce((sum, a) => sum + (parseFloat(a['TotalScore'] || 0)), 0);
+          attendanceScore = total / attRows.length;
+        }
+        // Tính điểm tổng kết
+        const finalScore = ((examScore + attendanceScore) / 3).toFixed(1);
+        reportRows.push({
+          classId, className, studentId, studentName, examScore, attendanceScore: attendanceScore.toFixed(1), finalScore
+        });
+      }
+    }
+
+    // === Sinh file PDF đẹp ===
+    const __filename = fileURLToPath(import.meta.url);
+    const __dirname = path.dirname(__filename);
+    const reportsDir = path.join(process.cwd(), 'reports');
+    if (!fs.existsSync(reportsDir)) fs.mkdirSync(reportsDir);
+    const pdfPath = path.join(reportsDir, `report_${monthStr}.pdf`);
+    const fontPath = path.join(__dirname, 'NotoSans-Regular.ttf');
+    const doc = new PDFDocument({ margin: 40, size: 'A4' });
+    doc.pipe(fs.createWriteStream(pdfPath));
+    doc.registerFont('NotoSans', fontPath);
+    doc.font('NotoSans');
+    // Icon trường học
+    doc.fontSize(40).text('🏫', { align: 'center' });
+    doc.moveDown(0.2);
+    // Tiêu đề lớn
+    doc.fontSize(22).fillColor('#1d3557').text(`BÁO CÁO TỔNG KẾT THÁNG ${monthStr}`, { align: 'center', underline: true, lineGap: 6 });
+    doc.moveDown();
+    doc.fontSize(12).fillColor('black').text(`Tổng số buổi đánh giá: ${totalSessions}`);
+    doc.text(`Số lượt đánh giá Tốt: ${goodCount}`);
+    doc.text(`Số lượt đánh giá Khá: ${fairCount}`);
+    doc.text(`Số lượt đánh giá Trung bình: ${averageCount}`);
+    doc.moveDown();
+    doc.fontSize(15).fillColor('#457b9d').text('Bảng điểm tổng kết:', { underline: true });
+    doc.moveDown(0.5);
+    // Header bảng
+    const tableTop = doc.y;
+    const colWidths = [60, 60, 120, 60, 70, 60];
+    const headers = ['Lớp', 'Mã HS', 'Tên HS', 'Điểm thi', 'Đánh giá TB', 'Tổng kết'];
+    let x = 40;
+    doc.fontSize(11).fillColor('white').font('NotoSans').rect(x, tableTop, colWidths.reduce((a, b) => a + b), 24).fill('#457b9d');
+    doc.fillColor('white');
+    for (let i = 0; i < headers.length; i++) {
+      doc.text(headers[i], x + 4, tableTop + 6, { width: colWidths[i] - 8, align: 'center' });
+      x += colWidths[i];
+    }
+    doc.fillColor('black');
+    // Dữ liệu bảng
+    let y = tableTop + 24;
+    for (let i = 0; i < reportRows.length; i++) {
+      const row = reportRows[i];
+      x = 40;
+      // Kẻ nền xen kẽ
+      if (i % 2 === 0) {
+        doc.rect(x, y, colWidths.reduce((a, b) => a + b), 22).fill('#f1faee');
+        doc.fillColor('black');
+      }
+      doc.font('NotoSans').fontSize(11);
+      doc.text(row.className, x + 4, y + 5, { width: colWidths[0] - 8, align: 'center' }); x += colWidths[0];
+      doc.text(row.studentId, x + 4, y + 5, { width: colWidths[1] - 8, align: 'center' }); x += colWidths[1];
+      doc.text(row.studentName, x + 4, y + 5, { width: colWidths[2] - 8, align: 'left' }); x += colWidths[2];
+      doc.text(row.examScore, x + 4, y + 5, { width: colWidths[3] - 8, align: 'right' }); x += colWidths[3];
+      doc.text(row.attendanceScore, x + 4, y + 5, { width: colWidths[4] - 8, align: 'right' }); x += colWidths[4];
+      doc.text(row.finalScore, x + 4, y + 5, { width: colWidths[5] - 8, align: 'right' });
+      y += 22;
+      doc.fillColor('black');
+    }
+    doc.end();
+    console.log(`[CRON] Đã sinh file PDF báo cáo tổng kết tháng: ${pdfPath}`);
+
+    // === Upload file PDF lên Google Drive ===
+    let driveLink = '';
+    try {
+      const driveRes = await drive.files.create({
+        requestBody: {
+          name: `BaoCaoTongKet_${monthStr}.pdf`,
+          mimeType: 'application/pdf',
+          parents: process.env.GOOGLE_DRIVE_FOLDER_ID ? [process.env.GOOGLE_DRIVE_FOLDER_ID] : undefined,
+        },
+        media: {
+          mimeType: 'application/pdf',
+          body: fs.createReadStream(pdfPath),
+        },
+        fields: 'id,webViewLink,webContentLink',
+      });
+      await drive.permissions.create({
+        fileId: driveRes.data.id,
+        requestBody: { role: 'reader', type: 'anyone' },
+      });
+      const fileMeta = await drive.files.get({ fileId: driveRes.data.id, fields: 'webViewLink,webContentLink' });
+      driveLink = fileMeta.data.webViewLink || fileMeta.data.webContentLink;
+      console.log(`[CRON] Đã upload báo cáo PDF lên Google Drive: ${driveLink}`);
+    } catch (err) {
+      console.error('[CRON] Lỗi upload file PDF lên Google Drive:', err);
+    }
+
+    // === Gửi email báo cáo cho tất cả tài khoản có email ===
+    try {
+      const accounts = await getSheetData('accounts');
+      const emails = accounts.map(acc => acc.email).filter(e => e && e.includes('@'));
+      if (emails.length === 0) {
+        console.warn('[CRON] Không tìm thấy email nào trong sheet accounts để gửi báo cáo!');
+      } else {
+        for (const email of emails) {
+          await sendMail({
+            to: email,
+            subject: `Báo cáo tổng kết tháng ${monthStr}`,
+            text: `Xin chào,\n\nĐính kèm là báo cáo tổng kết tháng ${monthStr}.\nBạn cũng có thể xem trực tuyến tại: ${driveLink}`,
+            html: `<div style='font-family:sans-serif;font-size:15px;'>
+              <p>Xin chào,</p>
+              <p>Đính kèm là <b>báo cáo tổng kết tháng ${monthStr}</b>.</p>
+              <p>Bạn cũng có thể xem trực tuyến tại: <a href='${driveLink}'>${driveLink}</a></p>
+              <p style='color:#888;font-size:13px;margin-top:24px;'>— Student Tracker</p>
+            </div>`,
+            attachments: [
+              {
+                filename: `BaoCaoTongKet_${monthStr}.pdf`,
+                path: pdfPath,
+                contentType: 'application/pdf',
+              },
+            ],
+          });
+          console.log(`[CRON] Đã gửi email báo cáo tổng kết tháng tới: ${email}`);
+        }
+      }
+    } catch (err) {
+      console.error('[CRON] Lỗi gửi email báo cáo tổng kết tháng:', err);
+    }
+    // === END PDF + UPLOAD + EMAIL ===
+    console.log(`[CRON] Hoàn thành tổng kết điểm tháng ${monthStr}`);
+  } catch (err) {
+    console.error('[CRON] Lỗi tổng kết điểm tháng:', err);
   }
 });
 

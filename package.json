@@ -17,6 +17,7 @@
     "node-cron": "^4.2.1",
     "nodemailer": "^7.0.5",
     "open": "^10.2.0",
+    "pdfkit": "^0.17.1",
     "streamifier": "^0.1.1"
   },
   "devDependencies": {
