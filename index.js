@@ -10,10 +10,13 @@ import cron from "node-cron";
 import admin from "firebase-admin";
 // Xoá dòng import serviceAccount
 // import serviceAccount from "./student-tracker-7afed-firebase-adminsdk-fbsvc-ff9e706a85.json" assert { type: "json" };
-
+dotenv.config();
 // Đọc từng service account từ biến môi trường
+if (!process.env.GOOGLE_SERVICE_ACCOUNT_JSON_SHEETS) {
+  throw new Error("GOOGLE_SERVICE_ACCOUNT_JSON_SHEETS environment variable is not set!");
+}
 const serviceAccountSheets = JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT_JSON_SHEETS);
-const serviceAccountDrive = JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT_JSON_DRIVE);
+
 const serviceAccountFirebase = JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT_JSON_FIREBASE);
 
 // Khởi tạo Firebase Admin với service account riêng
@@ -21,7 +24,7 @@ admin.initializeApp({
   credential: admin.credential.cert(serviceAccountFirebase),
 });
 
-dotenv.config();
+
 
 const app = express();
 app.use(cors({
