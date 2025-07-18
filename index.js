@@ -29,6 +29,7 @@ admin.initializeApp({
 const app = express();
 app.use(cors({
   origin: [
+    "http://localhost:5173",
     "http://localhost:5174",
     "https://trackerstudent.netlify.app"
   ],
@@ -1283,9 +1284,26 @@ app.post("/api/save-fcm-token", async (req, res) => {
   try {
     const { token, username } = req.body;
     if (!token || !username) return res.status(400).json({ error: "Thiếu token hoặc username" });
-
-    // Kiểm tra sheet FCMTokens đã có chưa, nếu chưa thì tạo mới
-    // Lưu: username, token, timestamp
+    const tokens = await getSheetData("FCMTokens");
+    const rowIndex = tokens.findIndex(row => row.username === username);
+    if (rowIndex !== -1) {
+      // Đã có token cũ, cập nhật lại dòng này
+      const resSheet = await sheets.spreadsheets.values.get({
+        spreadsheetId: SHEET_ID,
+        range: "FCMTokens",
+      });
+      const headers = resSheet.data.values[0];
+      const updated = { ...tokens[rowIndex], token, timestamp: new Date().toISOString() };
+      const rowValues = headers.map(h => updated[h] || "");
+      await sheets.spreadsheets.values.update({
+        spreadsheetId: SHEET_ID,
+        range: `FCMTokens!A${rowIndex + 2}:Z${rowIndex + 2}`,
+        valueInputOption: "USER_ENTERED",
+        requestBody: { values: [rowValues] },
+      });
+      return res.json({ success: true, message: "Token đã được cập nhật" });
+    }
+    // Nếu chưa có, thêm mới
     await sheets.spreadsheets.values.append({
       spreadsheetId: SHEET_ID,
       range: "FCMTokens",
