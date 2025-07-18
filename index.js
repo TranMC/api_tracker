@@ -152,6 +152,7 @@ app.get("/api/classes/today", async (req, res) => {
       name: c.Name || c.name,
       startTime: c["Start Time"] || c.startTime,
       endTime: c["End Time"] || c.endTime,
+      room: c["Room"] || c.room,
       isActive: true,
       studentsCount: students.filter(s => {
         const classIds = (s["Class ID"] || s.classId || "").split(",").map(x => x.trim());
@@ -165,10 +166,11 @@ app.get("/api/classes/today", async (req, res) => {
   }
 });
 
+// API tạo lớp học
 app.post("/api/classes", async (req, res) => {
   try {
     console.log("POST /api/classes body:", req.body);
-    let { id, name, startTime, endTime, room, daysOfWeek, exceptionStudents } = req.body;
+    let { id, name, startTime, endTime, room } = req.body;
     if (!name || !startTime || !endTime) {
       return res.status(400).json({ error: "Thiếu thông tin lớp học" });
     }
@@ -176,16 +178,13 @@ app.post("/api/classes", async (req, res) => {
     if (!id) {
       id = `CLASS_${Date.now()}_${Math.floor(Math.random()*1000)}`;
     }
-    // Lưu daysOfWeek và exceptionStudents dạng JSON string
-    const daysOfWeekStr = daysOfWeek ? JSON.stringify(daysOfWeek) : "";
-    const exceptionStudentsStr = exceptionStudents ? JSON.stringify(exceptionStudents) : "";
     // Ghi vào Google Sheets đúng thứ tự cột
     await sheets.spreadsheets.values.append({
       spreadsheetId: SHEET_ID,
       range: "Classes",
       valueInputOption: "USER_ENTERED",
       requestBody: {
-        values: [[id, name, startTime, endTime, room || "", daysOfWeekStr, exceptionStudentsStr, "TRUE"]],
+        values: [[id, name, startTime, endTime, room || "", "", "", "TRUE"]],
       },
     });
     res.json({ success: true, id });
@@ -195,6 +194,7 @@ app.post("/api/classes", async (req, res) => {
   }
 });
 
+// API lấy danh sách lớp
 app.get("/api/classes", async (req, res) => {
   try {
     const classes = await getSheetData("Classes");
@@ -202,8 +202,7 @@ app.get("/api/classes", async (req, res) => {
     const mapped = classes.map(item => ({
       ...item,
       id: item["Class ID"] || item.ID || item.Id || item.id,
-      daysOfWeek: item.DaysOfWeek ? JSON.parse(item.DaysOfWeek) : [],
-      exceptionStudents: item.ExceptionStudents ? JSON.parse(item.ExceptionStudents) : {},
+      // KHÔNG còn daysOfWeek, exceptionStudents
     }));
     res.json(mapped);
   } catch (err) {
@@ -216,7 +215,7 @@ app.get("/api/classes", async (req, res) => {
 app.patch("/api/classes/:id", async (req, res) => {
   try {
     const { id } = req.params;
-    const { name, startTime, endTime, room, daysOfWeek, exceptionStudents } = req.body;
+    const { name, startTime, endTime, room } = req.body;
     // Lấy dữ liệu hiện tại
     const classes = await getSheetData("Classes");
     const rowIndex = classes.findIndex(
@@ -237,8 +236,7 @@ app.patch("/api/classes/:id", async (req, res) => {
     if (startTime !== undefined) updated["Start Time"] = startTime;
     if (endTime !== undefined) updated["End Time"] = endTime;
     if (room !== undefined) updated.Room = room;
-    if (daysOfWeek !== undefined) updated.DaysOfWeek = JSON.stringify(daysOfWeek);
-    if (exceptionStudents !== undefined) updated.ExceptionStudents = JSON.stringify(exceptionStudents);
+    // KHÔNG còn daysOfWeek, exceptionStudents
     // Tạo mảng giá trị đúng thứ tự cột
     const rowValues = headers.map(h => updated[h] || "");
     // Ghi đè lại dòng trong sheet (rowIndex + 2 vì header là dòng 1)
