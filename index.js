@@ -849,9 +849,12 @@ app.get("/api/attendance-criteria", async (req, res) => {
       if (idx !== -1) return res.json({ rowIndex: idx });
       return res.json({ rowIndex: null });
     }
-    // Nếu có username, chỉ trả về bản ghi của user đó
+    // Nếu có username, có thể kèm classId và date để load chính xác nội dung đã điểm danh/đánh giá
     if (username) {
-      return res.json(data.filter(r => (r["username"] || "").trim() === username));
+      let filtered = data.filter(r => (r["username"] || "").trim() === username);
+      if (classId) filtered = filtered.filter(r => String(r["Class ID"]) === String(classId));
+      if (date) filtered = filtered.filter(r => String(r["Date"]) === String(date));
+      return res.json(filtered);
     }
     // Nếu không có username, trả về toàn bộ (chỉ dành cho admin)
     res.json(data);
@@ -1106,8 +1109,10 @@ app.post("/api/upload-drive", upload.array("files"), async (req, res) => {
         requestBody: { role: "reader", type: "anyone" },
       });
       // Lấy link xem công khai
-      const fileMeta = await drive.files.get({ fileId: driveRes.data.id, fields: "webViewLink,webContentLink" });
-      links.push(fileMeta.data.webViewLink || fileMeta.data.webContentLink);
+      const fileMeta = await drive.files.get({ fileId: driveRes.data.id, fields: "id,webViewLink,webContentLink" });
+      const fileId = fileMeta.data.id || driveRes.data.id;
+      const previewLink = fileId ? `https://drive.google.com/uc?export=view&id=${fileId}` : (fileMeta.data.webContentLink || fileMeta.data.webViewLink);
+      links.push(previewLink);
     }
     res.json({ links });
   } catch (err) {
@@ -1117,6 +1122,8 @@ app.post("/api/upload-drive", upload.array("files"), async (req, res) => {
 });
 
 // === CRON JOB: Tổng kết điểm tháng tự động vào ngày đầu tháng ===
+// ĐÃ TẮT THEO YÊU CẦU: Chuyển sang tổng hợp theo thời gian thực (on-demand)
+/*
 cron.schedule('10 0 1 * *', async () => {
   try {
     const now = new Date();
@@ -1302,6 +1309,269 @@ cron.schedule('10 0 1 * *', async () => {
     console.log(`[CRON] Hoàn thành tổng kết điểm tháng ${monthStr}`);
   } catch (err) {
     console.error('[CRON] Lỗi tổng kết điểm tháng:', err);
+  }
+});
+*/
+
+// API: Tổng kết điểm tháng theo thời gian thực (Up-to-date)
+app.get("/api/monthly-summary-live", async (req, res) => {
+  try {
+    const { classId, month } = req.query;
+    if (!classId || !month) {
+      return res.status(400).json({ error: "Thiếu classId hoặc month" });
+    }
+
+    const [classes, students, scores, attendance, monthlySummaries] = await Promise.all([
+      getSheetData("Classes"),
+      getSheetData("Students"),
+      getSheetData("Scores"),
+      getSheetData("AttendanceCriteria"),
+      getSheetData("MonthlySummary"),
+    ]);
+
+    // Xác định nhóm lớp (Group ID) nếu có
+    const findClassId = (row) => row["Class ID"] || row.ID || row.Id || row.id;
+    const classRow = classes.find((c) => String(findClassId(c)) === String(classId));
+    const groupId = classRow && (classRow["Group ID"] || classRow.groupId);
+    const effectiveClassIds = groupId
+      ? classes
+          .filter((c) => String(c["Group ID"] || c.groupId) === String(groupId))
+          .map((c) => String(findClassId(c)))
+      : [String(classId)];
+
+    // Chuẩn hoá note đã lưu (nếu có) theo Student ID + class + month
+    const noteKey = (sid, cid, m) => `${String(sid)}__${String(cid)}__${String(m)}`;
+    const noteMap = new Map();
+    for (const row of monthlySummaries) {
+      const sid = row["Student ID"] || row.studentId;
+      const cid = row["Class ID"] || row.classId;
+      const m = row["Month"] || row.month;
+      if (sid && cid && m) {
+        noteMap.set(noteKey(sid, cid, m), row["Note"] || row.note || "");
+      }
+    }
+
+    // Lọc học sinh thuộc lớp
+    const classStudents = students.filter((s) => {
+      const classIds = String(s["Class ID"] || s.classId || "")
+        .split(",")
+        .map((x) => x.trim())
+        .filter(Boolean);
+      return classIds.some((cid) => effectiveClassIds.includes(String(cid)));
+    });
+
+    // Tính điểm theo thời gian thực
+    const result = [];
+    for (const stu of classStudents) {
+      const studentId = stu["Student ID"] || stu.studentId || stu.id;
+      if (!studentId) continue;
+
+      // Điểm thi tháng
+      const scoreRows = scores.filter(
+        (s) =>
+          String(s["studentId"] || s["Student ID"]) === String(studentId) &&
+          effectiveClassIds.includes(String(s["classId"] || s["Class ID"])) &&
+          String(s["month"] || s["Month"]) === String(month)
+      );
+      const examValues = scoreRows
+        .map((r) => Number(r["score"] || r["Score"] || 0))
+        .filter((n) => Number.isFinite(n));
+      const examScore = examValues.length > 0 ? Math.max(...examValues) : 0;
+
+      // Điểm đánh giá theo buổi: trung bình TotalScore trong tháng
+      const attRows = attendance.filter(
+        (a) =>
+          String(a["Student ID"]) === String(studentId) &&
+          effectiveClassIds.includes(String(a["Class ID"])) &&
+          String(a["Date"] || "").startsWith(String(month))
+      );
+      let attendanceScore = 0;
+      if (attRows.length > 0) {
+        const total = attRows.reduce((sum, a) => sum + (parseFloat(a["TotalScore"] || 0)), 0);
+        attendanceScore = total / attRows.length;
+      }
+
+      const finalScore = ((examScore + attendanceScore) / 3).toFixed(1);
+      // Ưu tiên lưu/hiển thị note theo classId đầu vào; nếu không có thì tìm theo class khác cùng nhóm
+      let note = noteMap.get(noteKey(studentId, classId, month)) || "";
+      if (!note) {
+        for (const cid of effectiveClassIds) {
+          const n = noteMap.get(noteKey(studentId, cid, month));
+          if (n) { note = n; break; }
+        }
+      }
+
+      result.push({
+        "Student ID": String(studentId),
+        "Class ID": groupId ? String(groupId) : String(classId),
+        ...(groupId ? { "Group ID": String(groupId), "Merged Class IDs": effectiveClassIds } : {}),
+        "Month": String(month),
+        "Exam Score": Number.isFinite(examScore) ? Number(examScore.toFixed(1)) : 0,
+        "Attendance Score": Number.isFinite(attendanceScore) ? Number(attendanceScore.toFixed(1)) : 0,
+        "Note": note,
+        "Final Score": finalScore,
+      });
+    }
+
+    // Ranking trong phạm vi lớp đã gộp (desc theo Final Score, rồi Exam Score)
+    const sorted = [...result].sort((a, b) => {
+      const af = parseFloat(a["Final Score"] || 0);
+      const bf = parseFloat(b["Final Score"] || 0);
+      if (bf !== af) return bf - af;
+      const ae = parseFloat(a["Exam Score"] || 0);
+      const be = parseFloat(b["Exam Score"] || 0);
+      return be - ae;
+    });
+    let prevScore = null;
+    let prevRank = 0;
+    sorted.forEach((row, idx) => {
+      const score = parseFloat(row["Final Score"] || 0);
+      const rank = score === prevScore ? prevRank : idx + 1; // standard competition ranking
+      row.Rank = rank;
+      prevScore = score;
+      prevRank = rank;
+    });
+    // Gắn rank về mảng kết quả gốc theo Student ID
+    const rankById = new Map(sorted.map(r => [String(r["Student ID"]), r.Rank]));
+    result.forEach(r => { r.Rank = rankById.get(String(r["Student ID"])) || null; });
+
+    res.json(result);
+  } catch (err) {
+    console.error("[ERROR] /api/monthly-summary-live:", err);
+    res.status(500).json({ error: "Lỗi khi tổng hợp tổng kết theo thời gian thực" });
+  }
+});
+
+// API: Ghi (materialize) toàn bộ tổng kết theo thời gian thực vào sheet MonthlySummary
+app.post("/api/monthly-summary/materialize", async (req, res) => {
+  try {
+    const classId = (req.body && req.body.classId) || req.query.classId;
+    const month = (req.body && req.body.month) || req.query.month;
+    if (!classId || !month) {
+      return res.status(400).json({ error: "Thiếu classId hoặc month" });
+    }
+
+    const [classes, students, scores, attendance, existingSummary] = await Promise.all([
+      getSheetData("Classes"),
+      getSheetData("Students"),
+      getSheetData("Scores"),
+      getSheetData("AttendanceCriteria"),
+      getSheetData("MonthlySummary"),
+    ]);
+
+    const findClassId = (row) => row["Class ID"] || row.ID || row.Id || row.id;
+    const classRow = classes.find((c) => String(findClassId(c)) === String(classId));
+    const groupId = classRow && (classRow["Group ID"] || classRow.groupId);
+    const effectiveClassIds = groupId
+      ? classes
+          .filter((c) => String(c["Group ID"] || c.groupId) === String(groupId))
+          .map((c) => String(findClassId(c)))
+      : [String(classId)];
+
+    const results = [];
+    // Tính theo live logic
+    const classStudents = students.filter((s) => {
+      const classIds = String(s["Class ID"] || s.classId || "")
+        .split(",")
+        .map((x) => x.trim())
+        .filter(Boolean);
+      return classIds.some((cid) => effectiveClassIds.includes(String(cid)));
+    });
+
+    for (const stu of classStudents) {
+      const studentId = stu["Student ID"] || stu.studentId || stu.id;
+      if (!studentId) continue;
+      const scoreRows = scores.filter(
+        (s) =>
+          String(s["studentId"] || s["Student ID"]) === String(studentId) &&
+          effectiveClassIds.includes(String(s["classId"] || s["Class ID"])) &&
+          String(s["month"] || s["Month"]) === String(month)
+      );
+      const examValues = scoreRows
+        .map((r) => Number(r["score"] || r["Score"] || 0))
+        .filter((n) => Number.isFinite(n));
+      const examScore = examValues.length > 0 ? Math.max(...examValues) : 0;
+
+      const attRows = attendance.filter(
+        (a) =>
+          String(a["Student ID"]) === String(studentId) &&
+          effectiveClassIds.includes(String(a["Class ID"])) &&
+          String(a["Date"] || "").startsWith(String(month))
+      );
+      let attendanceScore = 0;
+      if (attRows.length > 0) {
+        const total = attRows.reduce((sum, a) => sum + (parseFloat(a["TotalScore"] || 0)), 0);
+        attendanceScore = total / attRows.length;
+      }
+      const finalScore = ((examScore + attendanceScore) / 3).toFixed(1);
+      results.push({ studentId: String(studentId), classId: String(classId), month: String(month), examScore, attendanceScore: Number(attendanceScore.toFixed(1)), finalScore });
+    }
+
+    // Ghi vào sheet MonthlySummary: update nếu tồn tại, không thì append
+    const resSheet = await sheets.spreadsheets.values.get({ spreadsheetId: SHEET_ID, range: "MonthlySummary" });
+    const headers = resSheet.data.values ? resSheet.data.values[0] : ["Student ID","Class ID","Month","Exam Score","Attendance Score","Note","Final Score","Username"];
+
+    let updated = 0, appended = 0;
+    // Tạo map để tìm row nhanh
+    const indexByKey = new Map();
+    for (let i = 0; i < existingSummary.length; i++) {
+      const r = existingSummary[i];
+      const key = `${r["Student ID"]}__${r["Class ID"]}__${r["Month"]}`;
+      indexByKey.set(key, i);
+    }
+
+    for (const row of results) {
+      const key = `${row.studentId}__${row.classId}__${row.month}`;
+      const existingIndex = indexByKey.get(key);
+      if (existingIndex !== undefined) {
+        const updatedObj = { ...existingSummary[existingIndex] };
+        updatedObj["Exam Score"] = row.examScore;
+        updatedObj["Attendance Score"] = row.attendanceScore;
+        updatedObj["Final Score"] = row.finalScore;
+        const rowValues = headers.map((h) => {
+          if (h === "Student ID") return row.studentId;
+          if (h === "Class ID") return row.classId;
+          if (h === "Group ID") return groupId ? String(groupId) : "";
+          if (h === "Merged Class IDs") return groupId ? effectiveClassIds.join(",") : "";
+          if (h === "Month") return row.month;
+          if (h === "Exam Score") return row.examScore;
+          if (h === "Attendance Score") return row.attendanceScore;
+          if (h === "Final Score") return row.finalScore;
+          return updatedObj[h] || "";
+        });
+        await sheets.spreadsheets.values.update({
+          spreadsheetId: SHEET_ID,
+          range: `MonthlySummary!A${Number(existingIndex) + 2}:Z${Number(existingIndex) + 2}`,
+          valueInputOption: "USER_ENTERED",
+          requestBody: { values: [rowValues] },
+        });
+        updated++;
+      } else {
+        const rowValues = headers.map((h) => {
+          if (h === "Student ID") return row.studentId;
+          if (h === "Class ID") return row.classId;
+          if (h === "Group ID") return groupId ? String(groupId) : "";
+          if (h === "Merged Class IDs") return groupId ? effectiveClassIds.join(",") : "";
+          if (h === "Month") return row.month;
+          if (h === "Exam Score") return row.examScore;
+          if (h === "Attendance Score") return row.attendanceScore;
+          if (h === "Final Score") return row.finalScore;
+          return "";
+        });
+        await sheets.spreadsheets.values.append({
+          spreadsheetId: SHEET_ID,
+          range: "MonthlySummary",
+          valueInputOption: "USER_ENTERED",
+          requestBody: { values: [rowValues] },
+        });
+        appended++;
+      }
+    }
+
+    return res.json({ success: true, updated, appended, total: results.length });
+  } catch (err) {
+    console.error("[ERROR] POST /api/monthly-summary/materialize:", err);
+    res.status(500).json({ error: "Lỗi khi ghi tổng kết theo thời gian thực vào sheet" });
   }
 });
 
