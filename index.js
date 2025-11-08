@@ -430,6 +430,39 @@ app.patch("/api/students/:studentId", async (req, res) => {
   }
 });
 
+// API xóa học sinh khỏi lớp
+app.delete("/api/students/:studentId/classes/:classId", async (req, res) => {
+  try {
+    const { studentId, classId } = req.params;
+    const students = await getSheetData("Students");
+    const rowIndex = students.findIndex(s => s["Student ID"] === studentId || s.studentId === studentId || s["Mã học sinh"] === studentId);
+    if (rowIndex === -1) {
+      return res.status(404).json({ error: "Không tìm thấy học sinh" });
+    }
+    const resSheet = await sheets.spreadsheets.values.get({
+      spreadsheetId: SHEET_ID,
+      range: "Students",
+    });
+    const headers = resSheet.data.values[0];
+    const updated = { ...students[rowIndex] };
+    let current = updated["Class ID"] || updated.classId || "";
+    let arr = current.split(",").map(x => x.trim()).filter(Boolean);
+    arr = arr.filter(id => id !== classId);
+    updated["Class ID"] = arr.join(",");
+    const rowValues = headers.map(h => updated[h] || "");
+    await sheets.spreadsheets.values.update({
+      spreadsheetId: SHEET_ID,
+      range: `Students!A${rowIndex + 2}:Z${rowIndex + 2}`,
+      valueInputOption: "USER_ENTERED",
+      requestBody: { values: [rowValues] },
+    });
+    res.json({ success: true });
+  } catch (err) {
+    console.error("[ERROR] DELETE /api/students/:studentId/classes/:classId:", err);
+    res.status(500).json({ error: "Lỗi khi xóa học sinh khỏi lớp" });
+  }
+});
+
 // PATCH student (sửa thông tin học sinh)
 app.patch("/api/students/:studentId", async (req, res) => {
   try {
