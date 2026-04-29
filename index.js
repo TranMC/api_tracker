@@ -79,7 +79,27 @@ oAuth2Client.setCredentials(token);
 const drive = google.drive({ version: "v3", auth: oAuth2Client });
 
 // Multer setup để nhận multipart/form-data
-const upload = multer({ storage: multer.memoryStorage() });
+// Sử dụng diskStorage vào tmp dir thay vì giữ trong memory để giảm nguy cơ DoS
+const upload = multer({
+  storage: multer.diskStorage({
+    destination: (req, file, cb) => cb(null, os.tmpdir()),
+    filename: (req, file, cb) => {
+      const safeName = file.originalname.replace(/[^a-zA-Z0-9.-]/g, "_");
+      cb(null, `${Date.now()}-${safeName}`);
+    }
+  }),
+  limits: {
+    // Giới hạn kích thước file tối đa 5MB và tối đa 5 files mỗi request
+    fileSize: 5 * 1024 * 1024,
+    files: 5,
+  },
+  fileFilter: (req, file, cb) => {
+    // Nếu cần, giới hạn loại file ở đây (ví dụ chỉ cho phép image/pdf)
+    // const allowed = /pdf|jpeg|png|jpg/; // ví dụ
+    // if (!allowed.test(path.extname(file.originalname).toLowerCase())) return cb(null, false);
+    cb(null, true);
+  }
+});
 
 // Helper: get data from any sheet
 async function getSheetData(sheetName) {
@@ -111,20 +131,41 @@ function formatTimestampVN(date = new Date()) {
 
 // Hàm gửi email
 async function sendMail({ to, subject, text, html, attachments }) {
+  // Basic validation to avoid passing unsafe envelope options
+  if (!to || typeof to !== "string" || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(to)) {
+    throw new Error("Invalid recipient email address");
+  }
+  if (subject && subject.length > 200) subject = subject.slice(0, 200);
+
+  // Sanitize attachments: ensure not too many and not too large
+  const safeAttachments = (attachments || []).slice(0, 5).map(att => {
+    if (att && att.path && fs.existsSync(att.path)) {
+      const stat = fs.statSync(att.path);
+      if (stat.size > 5 * 1024 * 1024) throw new Error("Attachment too large");
+      return att;
+    }
+    // If attachment is not a file path, ignore it
+    return null;
+  }).filter(Boolean);
+
   const transporter = nodemailer.createTransport({
     service: "gmail",
     auth: {
       user: process.env.EMAIL_USER,
       pass: process.env.EMAIL_PASS,
     },
+    // Không truyền bất kỳ option động nào do input từ user
+    pool: false,
+    secure: true,
   });
+
   const info = await transporter.sendMail({
     from: process.env.EMAIL_FROM,
     to,
     subject,
     text,
     html,
-    attachments,
+    attachments: safeAttachments,
   });
   console.log("SendMail result:", info);
 }

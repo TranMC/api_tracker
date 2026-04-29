@@ -13,12 +13,28 @@
     "express": "^4.21.2",
     "firebase-admin": "^13.4.0",
     "googleapis": "^152.0.0",
-    "multer": "^2.0.2",
+    "multer": "^2.1.1",
     "node-cron": "^4.2.1",
-    "nodemailer": "^7.0.5",
+    "nodemailer": "^8.0.7",
     "open": "^10.2.0",
     "pdfkit": "^0.17.1",
     "streamifier": "^0.1.1"
+  },
+  "overrides": {
+    "protobufjs": "^7.5.5",
+    "fast-xml-parser": "^5.7.0",
+    "uuid": "^14.0.0",
+    "jws": "4.0.1",
+    "node-forge": "1.4.0",
+    "minimatch": "3.1.4",
+    "brace-expansion": "1.1.13",
+    "picomatch": "2.3.2",
+    "path-to-regexp": "0.1.13",
+    "qs": "6.15.1"
+    ,"teeny-request": "10.1.2",
+    "retry-request": "8.0.2",
+    "http-proxy-agent": "9.0.0",
+    "@tootallnate/once": "3.0.1"
   },
   "devDependencies": {
     "nodemon": "^3.1.10"
