@@ -27,12 +27,12 @@ export async function getAllClassesHandler(req, res, next) {
 
 export async function createClassHandler(req, res, next) {
   try {
-    const { id, name, startTime, endTime, room } = req.body;
-    if (!name || !startTime || !endTime) {
-      return res.status(400).json({ error: "Thiếu thông tin lớp học" });
+    const { id, name, startTime, endTime, room, schedules } = req.body;
+    if (!name) {
+      return res.status(400).json({ error: "Thiếu tên lớp học" });
     }
 
-    const createdId = await createClass({ id, name, startTime, endTime, room });
+    const createdId = await createClass({ id, name, startTime, endTime, room, schedules });
     res.json({ success: true, id: createdId });
   } catch (err) {
     next(err);
@@ -42,9 +42,9 @@ export async function createClassHandler(req, res, next) {
 export async function updateClassHandler(req, res, next) {
   try {
     const { id } = req.params;
-    const { name, startTime, endTime, room } = req.body;
+    const { name, startTime, endTime, room, schedules } = req.body;
 
-    const success = await updateClass(id, { name, startTime, endTime, room });
+    const success = await updateClass(id, { name, startTime, endTime, room, schedules });
     if (!success) {
       return res.status(404).json({ error: "Không tìm thấy lớp học" });
     }
@@ -72,7 +72,8 @@ export async function deleteClassHandler(req, res, next) {
 export async function getClassStudentsHandler(req, res, next) {
   try {
     const { classId } = req.params;
-    const data = await getStudentsByClassId(classId);
+    const { slotId } = req.query;
+    const data = await getStudentsByClassId(classId, slotId);
     res.json(data);
   } catch (err) {
     next(err);

@@ -4,6 +4,7 @@ import {
   addStudentToClass,
   removeStudentFromClass,
   updateStudent,
+  updateStudentSchedules,
   deleteStudent,
 } from "./students.service.js";
 
@@ -39,10 +40,10 @@ export async function createStudentHandler(req, res, next) {
 export async function updateStudentHandler(req, res, next) {
   try {
     const { studentId } = req.params;
-    const { classId, name, grade, email } = req.body;
+    const { classId, name, grade, email, classSchedules } = req.body;
 
     // Nếu chỉ truyền classId để gán vào lớp
-    if (classId && name === undefined && grade === undefined && email === undefined) {
+    if (classId && name === undefined && grade === undefined && email === undefined && classSchedules === undefined) {
       const success = await addStudentToClass(studentId, classId);
       if (!success) {
         return res.status(404).json({ error: "Không tìm thấy học sinh" });
@@ -51,7 +52,22 @@ export async function updateStudentHandler(req, res, next) {
     }
 
     // Nếu cập nhật nhiều thông tin
-    const success = await updateStudent(studentId, { name, grade, email, classId });
+    const success = await updateStudent(studentId, { name, grade, email, classId, classSchedules });
+    if (!success) {
+      return res.status(404).json({ error: "Không tìm thấy học sinh" });
+    }
+    res.json({ success: true });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function updateStudentSchedulesHandler(req, res, next) {
+  try {
+    const { studentId, classId } = req.params;
+    const { slotIds } = req.body; // array of slotIds
+
+    const success = await updateStudentSchedules(studentId, classId, slotIds);
     if (!success) {
       return res.status(404).json({ error: "Không tìm thấy học sinh" });
     }

@@ -79,7 +79,7 @@ export async function deleteAttendanceById(attendanceId) {
   return true;
 }
 
-export async function getAttendanceCriteria({ studentId, classId, date, username }) {
+export async function getAttendanceCriteria({ studentId, classId, date, username, slotId }) {
   const data = await getSheetData("AttendanceCriteria");
 
   if (studentId && classId && date && username) {
@@ -88,7 +88,8 @@ export async function getAttendanceCriteria({ studentId, classId, date, username
         r["Student ID"] === studentId &&
         r["Class ID"] === classId &&
         r["Date"] === date &&
-        r["username"] === username
+        r["username"] === username &&
+        (!slotId || !r.SlotId || String(r.SlotId) === String(slotId))
     );
     return { rowIndex: idx !== -1 ? idx : null };
   }
@@ -97,6 +98,9 @@ export async function getAttendanceCriteria({ studentId, classId, date, username
     let filtered = data.filter(r => (r["username"] || "").trim() === username);
     if (classId) filtered = filtered.filter(r => String(r["Class ID"]) === String(classId));
     if (date) filtered = filtered.filter(r => String(r["Date"]) === String(date));
+    if (slotId) {
+      filtered = filtered.filter(r => !r.SlotId || String(r.SlotId) === String(slotId));
+    }
     return filtered;
   }
 
@@ -104,35 +108,38 @@ export async function getAttendanceCriteria({ studentId, classId, date, username
 }
 
 export async function createAttendanceCriteria(body) {
+  const headers = await getSheetHeaders("AttendanceCriteria");
   const fields = [
     "StudentID", "StudentName", "ClassID", "ClassName", "Date", "Status",
     "Attitude", "Homework", "Worksheet", "Notebook", "Attendance", "TotalScore",
-    "Note", "Timestamp", "username"
+    "Note", "Timestamp", "username", "SlotId", "AttendanceType"
   ];
-  const row = fields.map(f => (body[f] !== undefined ? body[f] : ""));
+  const rowObj = {
+    ...body,
+    AttendanceType: body.AttendanceType || "official",
+  };
+  const row = headers.length > 0
+    ? headers.map(h => (rowObj[h] !== undefined ? rowObj[h] : ""))
+    : fields.map(f => (rowObj[f] !== undefined ? rowObj[f] : ""));
   await appendSheetRows("AttendanceCriteria", [row]);
   return true;
 }
 
 export async function upsertAttendanceCriteria(body) {
-  const fields = [
-    "Student ID", "StudentName", "Class ID", "ClassName", "Date", "Status",
-    "Attitude", "Homework", "Worksheet", "Notebook", "TotalScore", "Note",
-    "Timestamp", "username"
-  ];
+  const headers = await getSheetHeaders("AttendanceCriteria");
   const data = await getSheetData("AttendanceCriteria");
-  const { "Student ID": studentId, "Class ID": classId, Date: date, username } = body;
+  const { "Student ID": studentId, "Class ID": classId, Date: date, username, SlotId: slotId } = body;
 
   const idx = data.findIndex(
     r =>
       r["Student ID"] === studentId &&
       r["Class ID"] === classId &&
       r["Date"] === date &&
-      r["username"] === username
+      r["username"] === username &&
+      (!slotId || !r.SlotId || String(r.SlotId) === String(slotId))
   );
 
   if (idx !== -1) {
-    const headers = await getSheetHeaders("AttendanceCriteria");
     const updated = { ...data[idx] };
     for (const key in body) {
       if (headers.includes(key)) updated[key] = body[key];
@@ -141,8 +148,26 @@ export async function upsertAttendanceCriteria(body) {
     await updateSheetRow("AttendanceCriteria", idx, rowValues);
     return { updated: true };
   } else {
-    const row = fields.map(f => (body[f] !== undefined ? body[f] : ""));
-    await appendSheetRows("AttendanceCriteria", [row]);
+    const rowObj = {
+      "Student ID": studentId,
+      StudentName: body.StudentName || "",
+      "Class ID": classId,
+      ClassName: body.ClassName || "",
+      Date: date,
+      Status: body.Status || "absent",
+      Attitude: body.Attitude !== undefined ? body.Attitude : "",
+      Homework: body.Homework !== undefined ? body.Homework : "",
+      Worksheet: body.Worksheet !== undefined ? body.Worksheet : "",
+      Notebook: body.Notebook !== undefined ? body.Notebook : "",
+      TotalScore: body.TotalScore !== undefined ? body.TotalScore : "",
+      Note: body.Note || "",
+      Timestamp: body.Timestamp || "",
+      username: username || "",
+      SlotId: slotId || "",
+      AttendanceType: body.AttendanceType || "official",
+    };
+    const rowValues = headers.map(h => (rowObj[h] !== undefined ? rowObj[h] : (body[h] !== undefined ? body[h] : "")));
+    await appendSheetRows("AttendanceCriteria", [rowValues]);
     return { created: true };
   }
 }

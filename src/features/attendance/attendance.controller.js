@@ -69,8 +69,8 @@ export async function deleteAttendanceHandler(req, res, next) {
 
 export async function getAttendanceCriteriaHandler(req, res, next) {
   try {
-    const { studentId, classId, date, username } = req.query;
-    const data = await getAttendanceCriteria({ studentId, classId, date, username });
+    const { studentId, classId, date, username, slotId } = req.query;
+    const data = await getAttendanceCriteria({ studentId, classId, date, username, slotId });
     res.json(data);
   } catch (err) {
     next(err);
