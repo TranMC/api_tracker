@@ -1,6 +1,6 @@
 {
   "name": "student-tracker-api",
-  "version": "1.5.3",
+  "version": "1.6.0",
   "main": "index.js",
   "type": "module",
   "scripts": {
@@ -26,7 +26,6 @@
     "uuid": "^14.0.0",
     "jws": "4.0.1",
     "node-forge": "1.4.0",
-    "minimatch": "3.1.4",
     "brace-expansion": "1.1.13",
     "picomatch": "2.3.2",
     "path-to-regexp": "0.1.13",

@@ -75,8 +75,8 @@ export async function createLessonProgress(body) {
       HomeworkCheckDate || "",
       GeneralNote || "",
       NotificationSent || "",
-      "", // Checked
-      "", // Pushed
+      body.Checked || "",
+      body.Pushed || "",
     ],
   ]);
   return true;
