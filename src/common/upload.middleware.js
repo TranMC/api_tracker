@@ -10,8 +10,8 @@ export const uploadMiddleware = multer({
     },
   }),
   limits: {
-    fileSize: 5 * 1024 * 1024, // 5MB max per file
-    files: 5,                   // 5 files max per request
+    fileSize: 1024 * 1024 * 1024, // 1GB max per file
+    files: 20,                    // 20 files max per request
   },
   fileFilter: (req, file, cb) => {
     cb(null, true);

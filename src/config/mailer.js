@@ -32,7 +32,7 @@ export async function sendMail({ to, subject, text, html, attachments }) {
     service: "gmail",
     auth: {
       user: ENV.EMAIL_USER,
-      pass: ENV.EMAIL_PASS,
+      pass: (ENV.EMAIL_PASS || "").replace(/\s+/g, ""),
     },
     pool: false,
     secure: true,
