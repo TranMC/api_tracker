@@ -1,4 +1,4 @@
-import { loginUser, updateUserField } from "./auth.service.js";
+import { loginUser, updateUserField, getUserProfile } from "./auth.service.js";
 
 export async function loginHandler(req, res, next) {
   try {
@@ -10,6 +10,24 @@ export async function loginHandler(req, res, next) {
     const user = await loginUser(username, password);
     if (!user) {
       return res.status(401).json({ error: "Sai tài khoản hoặc mật khẩu" });
+    }
+
+    res.json({ user });
+  } catch (err) {
+    next(err);
+  }
+}
+
+export async function getUserProfileHandler(req, res, next) {
+  try {
+    const { username } = req.query;
+    if (!username) {
+      return res.status(400).json({ error: "Thiếu username" });
+    }
+
+    const user = await getUserProfile(username);
+    if (!user) {
+      return res.status(404).json({ error: "Không tìm thấy người dùng" });
     }
 
     res.json({ user });

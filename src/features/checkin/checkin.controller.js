@@ -24,7 +24,7 @@ export async function createCheckinLogHandler(req, res, next) {
     await createCheckinLog({ username, date, startTime, endTime, slotLabel, totalHours });
     res.json({ success: true });
   } catch (err) {
-    next(err);
+    res.status(400).json({ error: err.message || "Không thể lưu ca làm việc" });
   }
 }
 
