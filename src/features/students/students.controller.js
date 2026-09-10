@@ -19,11 +19,17 @@ export async function getAllStudentsHandler(req, res, next) {
 export async function createStudentHandler(req, res, next) {
   try {
     const { studentId, name, grade, email, classId } = req.body;
-    if (!name || !classId) {
-      return res.status(400).json({ error: "Thiếu thông tin học sinh" });
+    if (!name || !name.trim()) {
+      return res.status(400).json({ error: "Họ và tên học sinh là bắt buộc" });
     }
 
-    const createdId = await createStudent({ studentId, name, grade, email, classId });
+    const createdId = await createStudent({
+      studentId: studentId?.trim(),
+      name: name.trim(),
+      grade: grade?.trim() || "",
+      email: email?.trim() || "",
+      classId: classId ? String(classId).trim() : "",
+    });
     res.json({ success: true, studentId: createdId });
   } catch (err) {
     next(err);
