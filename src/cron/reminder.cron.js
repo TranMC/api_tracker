@@ -115,7 +115,7 @@ export function initReminderCronJobs() {
               };
 
               try {
-                const response = await firebaseAdmin.messaging().sendMulticast(message);
+                const response = await firebaseAdmin.messaging().sendEachForMulticast(message);
                 console.log(
                   "[PUSH] Đã gửi push notification cho lớp",
                   lp.ClassID,

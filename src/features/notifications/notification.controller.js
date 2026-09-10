@@ -1,4 +1,8 @@
-import { saveFCMToken, testMailService } from "./notification.service.js";
+import {
+  saveFCMToken,
+  testMailService,
+  sendTestPushNotification,
+} from "./notification.service.js";
 
 export async function saveFCMTokenHandler(req, res, next) {
   try {
@@ -22,3 +26,15 @@ export async function testMailHandler(req, res, next) {
     next(err);
   }
 }
+
+export async function testPushHandler(req, res, next) {
+  try {
+    const token = req.query?.token || req.body?.token;
+    const result = await sendTestPushNotification(token);
+    res.json({ success: true, ...result });
+
+  } catch (err) {
+    next(err);
+  }
+}
+

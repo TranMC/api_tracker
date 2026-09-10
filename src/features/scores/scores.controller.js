@@ -7,8 +7,8 @@ import {
 
 export async function getScoresHandler(req, res, next) {
   try {
-    const { classId, month } = req.query;
-    const data = await getScores({ classId, month });
+    const { classId, month, studentId } = req.query;
+    const data = await getScores({ classId, month, studentId });
     res.json(data);
   } catch (err) {
     next(err);

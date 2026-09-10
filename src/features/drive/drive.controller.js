@@ -1,4 +1,4 @@
-import { uploadFilesToDrive } from "./drive.service.js";
+import { uploadFilesToCloudinary } from "../cloudinary/cloudinary.service.js";
 
 export async function uploadFilesHandler(req, res, next) {
   try {
@@ -6,7 +6,7 @@ export async function uploadFilesHandler(req, res, next) {
       return res.status(400).json({ error: "No files uploaded" });
     }
 
-    const links = await uploadFilesToDrive(req.files);
+    const links = await uploadFilesToCloudinary(req.files);
     res.json({ links });
   } catch (err) {
     next(err);

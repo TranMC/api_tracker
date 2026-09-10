@@ -6,9 +6,14 @@ import {
   clearSheetRow,
 } from "../../common/sheets.dao.js";
 
-export async function getScores({ classId, month }) {
+export async function getScores({ classId, month, studentId }) {
   const scores = await getSheetData("Scores");
   let filtered = scores;
+  if (studentId) {
+    filtered = filtered.filter(
+      s => String(s.studentId || s["Student ID"] || "") === String(studentId)
+    );
+  }
   if (classId) {
     filtered = filtered.filter(s => String(s.classId || s["Class ID"]) === String(classId));
   }
