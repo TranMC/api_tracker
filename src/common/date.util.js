@@ -25,3 +25,34 @@ export function normalizeDate(d) {
   }
   return cleaned;
 }
+
+/**
+ * Lấy Date object hoặc thông tin giờ hiện tại theo múi giờ Việt Nam (UTC+7)
+ */
+export function getNowVN() {
+  const now = new Date();
+  const vnString = now.toLocaleString("en-US", { timeZone: "Asia/Ho_Chi_Minh" });
+  return new Date(vnString);
+}
+
+/**
+ * Lấy ngày hôm nay theo giờ Việt Nam dạng YYYY-MM-DD
+ */
+export function getTodayVNString() {
+  const vn = getNowVN();
+  const year = vn.getFullYear();
+  const month = String(vn.getMonth() + 1).padStart(2, "0");
+  const day = String(vn.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+/**
+ * Đổi "HH:mm" thành số phút từ đầu ngày
+ */
+export function timeToMinutes(timeStr) {
+  if (!timeStr || typeof timeStr !== "string") return 0;
+  const [h, m] = timeStr.split(":").map(Number);
+  return (h || 0) * 60 + (m || 0);
+}
+
+
