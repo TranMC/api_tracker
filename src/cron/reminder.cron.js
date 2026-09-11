@@ -88,7 +88,8 @@ export function initReminderCronJobs() {
         }
       }
     } catch (err) {
-      console.error("[CRON EMAIL ERROR]", err);
+      const errMsg = err?.message || err?.code || err;
+      console.error(`[CRON EMAIL ERROR] ${errMsg}`);
     }
   });
 
@@ -147,14 +148,15 @@ export function initReminderCronJobs() {
                 const rowValues = headers.map(h => (updated[h] !== undefined ? updated[h] : ""));
                 await updateSheetRow("LessonProgress", i, rowValues);
               } catch (err) {
-                console.error("[PUSH ERROR]", err);
+                console.error("[PUSH ERROR]", err?.message || err?.code || err);
               }
             }
           }
         }
       }
     } catch (err) {
-      console.error("[CRON PUSH ERROR]", err);
+      const errMsg = err?.message || err?.code || err;
+      console.error(`[CRON PUSH ERROR] ${errMsg}`);
     }
   });
 
