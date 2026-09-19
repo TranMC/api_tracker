@@ -3,7 +3,7 @@ import {
   getSheetHeaders,
   appendSheetRows,
   updateSheetRow,
-  clearSheetRow,
+  deleteSheetRow,
 } from "../../common/sheets.dao.js";
 import { normalizeDate } from "../../common/date.util.js";
 
@@ -105,7 +105,6 @@ export async function updateLessonProgressByIndex(rowIndex, body) {
 }
 
 export async function deleteLessonProgressByIndex(rowIndex) {
-  const headers = await getSheetHeaders("LessonProgress");
-  await clearSheetRow("LessonProgress", rowIndex, headers.length);
+  await deleteSheetRow("LessonProgress", rowIndex);
   return true;
 }

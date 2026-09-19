@@ -3,11 +3,29 @@ import {
   getSheetHeaders,
   appendSheetRows,
   updateSheetRow,
-  clearSheetRow,
+  deleteSheetRow,
+  cleanEmptyRows,
 } from "../../common/sheets.dao.js";
 
 export async function getAllStudents() {
-  return await getSheetData("Students");
+  const students = await getSheetData("Students");
+  let hasEmptyRow = false;
+
+  const validStudents = students.filter(s => {
+    const id = s["Student ID"] || s.studentId || s["Mã học sinh"] || s.ID || s.id;
+    const name = s["Name"] || s["Họ và tên"] || s.name;
+    const isBlank = !((id && String(id).trim()) || (name && String(name).trim()));
+    if (isBlank) hasEmptyRow = true;
+    return !isBlank;
+  });
+
+  if (hasEmptyRow) {
+    cleanEmptyRows("Students").catch(err => {
+      console.error("[CLEAN STUDENTS] Lỗi khi dọn dòng trống:", err.message);
+    });
+  }
+
+  return validStudents;
 }
 
 export async function createStudent({ studentId, name, grade, email, classId }) {
@@ -115,7 +133,6 @@ export async function deleteStudent(studentId) {
   );
   if (rowIndex === -1) return false;
 
-  const headers = await getSheetHeaders("Students");
-  await clearSheetRow("Students", rowIndex, headers.length);
+  await deleteSheetRow("Students", rowIndex);
   return true;
 }

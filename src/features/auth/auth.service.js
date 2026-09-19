@@ -3,7 +3,7 @@ import {
   getSheetHeaders,
   appendSheetRows,
   updateSheetRow,
-  clearSheetRow,
+  deleteSheetRow,
 } from "../../common/sheets.dao.js";
 
 export function normalizeUser(rawUser) {
@@ -275,7 +275,6 @@ export async function deleteAccount(username, requesterUsername) {
     throw new Error(`Không tìm thấy tài khoản "${cleanUsername}"`);
   }
 
-  const headers = await getSheetHeaders("accounts");
-  await clearSheetRow("accounts", rowIndex, headers.length);
+  await deleteSheetRow("accounts", rowIndex);
   return true;
 }

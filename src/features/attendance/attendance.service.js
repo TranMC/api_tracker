@@ -3,7 +3,7 @@ import {
   getSheetHeaders,
   appendSheetRows,
   updateSheetRow,
-  clearSheetRow,
+  deleteSheetRow,
 } from "../../common/sheets.dao.js";
 import { normalizeDate } from "../../common/date.util.js";
 
@@ -74,8 +74,7 @@ export async function deleteAttendanceById(attendanceId) {
   );
   if (rowIndex === -1) return false;
 
-  const headers = await getSheetHeaders("AttendanceCriteria");
-  await clearSheetRow("AttendanceCriteria", rowIndex, headers.length);
+  await deleteSheetRow("AttendanceCriteria", rowIndex);
   return true;
 }
 
@@ -188,7 +187,6 @@ export async function updateAttendanceCriteriaByIndex(rowIndex, body) {
 }
 
 export async function deleteAttendanceCriteriaByIndex(rowIndex) {
-  const headers = await getSheetHeaders("AttendanceCriteria");
-  await clearSheetRow("AttendanceCriteria", rowIndex, headers.length);
+  await deleteSheetRow("AttendanceCriteria", rowIndex);
   return true;
 }

@@ -3,7 +3,8 @@ import {
   getSheetHeaders,
   appendSheetRows,
   updateSheetRow,
-  clearSheetRow,
+  deleteSheetRow,
+  cleanEmptyRows,
 } from "../../common/sheets.dao.js";
 
 const DAY_NAMES = ["Chủ nhật", "Thứ 2", "Thứ 3", "Thứ 4", "Thứ 5", "Thứ 6", "Thứ 7"];
@@ -20,6 +21,7 @@ export async function getTodayClasses() {
 
   for (const c of classes) {
     const classId = c["Class ID"] || c.ID || c.Id || c.id;
+    if (!classId || !String(classId).trim()) continue;
     let schedules = [];
     if (c.Schedules) {
       try {
@@ -98,7 +100,24 @@ export async function getTodayClasses() {
 
 export async function getAllClasses() {
   const classes = await getSheetData("Classes");
-  return classes.map(item => {
+  let hasEmptyRow = false;
+
+  const validClasses = classes.filter(item => {
+    const id = item["Class ID"] || item.ID || item.Id || item.id;
+    const name = item.Name || item.name;
+    const isBlank = !((id && String(id).trim()) || (name && String(name).trim()));
+    if (isBlank) hasEmptyRow = true;
+    return !isBlank;
+  });
+
+  // Tự động dọn dẹp các dòng trống tồn đọng trên Sheet
+  if (hasEmptyRow) {
+    cleanEmptyRows("Classes").catch(err => {
+      console.error("[CLEAN CLASSES] Lỗi khi dọn dòng trống:", err.message);
+    });
+  }
+
+  return validClasses.map(item => {
     let schedules = [];
     if (item.Schedules) {
       try {
@@ -171,8 +190,7 @@ export async function deleteClass(id) {
   );
   if (rowIndex === -1) return false;
 
-  const headers = await getSheetHeaders("Classes");
-  await clearSheetRow("Classes", rowIndex, headers.length);
+  await deleteSheetRow("Classes", rowIndex);
   return true;
 }
 

@@ -3,7 +3,7 @@ import {
   getSheetHeaders,
   appendSheetRows,
   updateSheetRow,
-  clearSheetRow,
+  deleteSheetRow,
 } from "../../common/sheets.dao.js";
 
 export async function getScores({ classId, month, studentId }) {
@@ -45,7 +45,6 @@ export async function updateScoreByIndex(rowIndex, { score, note }) {
 }
 
 export async function deleteScoreByIndex(rowIndex) {
-  const headers = await getSheetHeaders("Scores");
-  await clearSheetRow("Scores", rowIndex, headers.length);
+  await deleteSheetRow("Scores", rowIndex);
   return true;
 }

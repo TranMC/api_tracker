@@ -114,20 +114,138 @@ export async function updateSheetRow(sheetName, rowIndex, rowValues) {
 }
 
 /**
- * Xóa một dòng trong Sheet bằng cách xóa trắng các ô của dòng đó
+ * Lấy numeric sheetId (gid) của tab dựa theo sheetName
  */
-export async function clearSheetRow(sheetName, rowIndex, colCount = 26) {
+let sheetMetadataCache = null;
+let lastMetadataFetch = 0;
+
+export async function getSheetNumericId(sheetName) {
   if (!sheets) throw new Error("Google Sheets client is not initialized");
-  const rowNum = Number(rowIndex) + 2;
-  const emptyRow = new Array(colCount).fill("");
+  const now = Date.now();
+  if (!sheetMetadataCache || now - lastMetadataFetch > 600000) {
+    const res = await withRetry(async () => {
+      return await sheets.spreadsheets.get({
+        spreadsheetId: ENV.SHEET_ID,
+        fields: "sheets(properties(sheetId,title))",
+      });
+    });
+    sheetMetadataCache = res.data.sheets || [];
+    lastMetadataFetch = now;
+  }
+
+  let found = sheetMetadataCache.find(
+    (s) => s.properties?.title?.toLowerCase() === sheetName.toLowerCase()
+  );
+
+  if (!found) {
+    const res = await withRetry(async () => {
+      return await sheets.spreadsheets.get({
+        spreadsheetId: ENV.SHEET_ID,
+        fields: "sheets(properties(sheetId,title))",
+      });
+    });
+    sheetMetadataCache = res.data.sheets || [];
+    lastMetadataFetch = now;
+    found = sheetMetadataCache.find(
+      (s) => s.properties?.title?.toLowerCase() === sheetName.toLowerCase()
+    );
+  }
+
+  if (found && found.properties?.sheetId !== undefined) {
+    return found.properties.sheetId;
+  }
+  throw new Error(`Không tìm thấy sheet có tên "${sheetName}"`);
+}
+
+/**
+ * Xóa hẳn một dòng (row) khỏi Sheet bằng Google Sheets API deleteDimension
+ * rowIndex: 0-indexed đối với data (dòng 1 là header -> rowIndex 0 tương ứng dòng 2 trên sheet)
+ */
+export async function deleteSheetRow(sheetName, rowIndex) {
+  if (!sheets) throw new Error("Google Sheets client is not initialized");
+  if (rowIndex === undefined || rowIndex === null || rowIndex < 0) {
+    throw new Error(`Invalid rowIndex: ${rowIndex}`);
+  }
+  const sheetId = await getSheetNumericId(sheetName);
+  const startIndex = Number(rowIndex) + 1; // 0-based: row 1 (header) là 0, row 2 (data 0) là 1
+  const endIndex = startIndex + 1;
+
   return await withRetry(async () => {
-    return await sheets.spreadsheets.values.update({
+    return await sheets.spreadsheets.batchUpdate({
       spreadsheetId: ENV.SHEET_ID,
-      range: `${sheetName}!A${rowNum}:Z${rowNum}`,
-      valueInputOption: "USER_ENTERED",
       requestBody: {
-        values: [emptyRow],
+        requests: [
+          {
+            deleteDimension: {
+              range: {
+                sheetId,
+                dimension: "ROWS",
+                startIndex,
+                endIndex,
+              },
+            },
+          },
+        ],
       },
     });
   });
 }
+
+/**
+ * Xóa một dòng trong Sheet: Thay vì xóa trắng các ô (để lại hàng rỗng),
+ * hàm sẽ xóa hẳn hàng đó khỏi bảng tính.
+ */
+export async function clearSheetRow(sheetName, rowIndex, colCount = 26) {
+  return await deleteSheetRow(sheetName, rowIndex);
+}
+
+/**
+ * Dọn dẹp tất cả các dòng hoàn toàn rỗng trong Sheet
+ */
+export async function cleanEmptyRows(sheetName) {
+  if (!sheets) return 0;
+  return await withRetry(async () => {
+    const res = await sheets.spreadsheets.values.get({
+      spreadsheetId: ENV.SHEET_ID,
+      range: sheetName,
+    });
+    const rows = res.data.values;
+    if (!rows || rows.length < 2) return 0;
+
+    const sheetId = await getSheetNumericId(sheetName);
+    const deleteRequests = [];
+
+    // Quét từ dưới lên trên để khi xóa index không bị thay đổi
+    for (let i = rows.length - 1; i >= 1; i--) {
+      const row = rows[i];
+      const isBlank =
+        !row ||
+        row.length === 0 ||
+        row.every((cell) => cell === undefined || cell === null || String(cell).trim() === "");
+      if (isBlank) {
+        deleteRequests.push({
+          deleteDimension: {
+            range: {
+              sheetId,
+              dimension: "ROWS",
+              startIndex: i,
+              endIndex: i + 1,
+            },
+          },
+        });
+      }
+    }
+
+    if (deleteRequests.length > 0) {
+      await sheets.spreadsheets.batchUpdate({
+        spreadsheetId: ENV.SHEET_ID,
+        requestBody: {
+          requests: deleteRequests,
+        },
+      });
+      console.log(`[CLEAN SHEET] Đã xóa ${deleteRequests.length} dòng trống khỏi sheet "${sheetName}".`);
+    }
+    return deleteRequests.length;
+  });
+}
+

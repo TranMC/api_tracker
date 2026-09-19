@@ -3,7 +3,7 @@ import {
   getSheetHeaders,
   appendSheetRows,
   updateSheetRow,
-  clearSheetRow,
+  deleteSheetRow,
 } from "../../common/sheets.dao.js";
 
 export async function getMonthlySummary({ classId, month, username }) {
@@ -57,8 +57,7 @@ export async function updateMonthlySummaryByIndex(rowIndex, { examScore, attenda
 }
 
 export async function deleteMonthlySummaryByIndex(rowIndex) {
-  const headers = await getSheetHeaders("MonthlySummary");
-  await clearSheetRow("MonthlySummary", rowIndex, headers.length);
+  await deleteSheetRow("MonthlySummary", rowIndex);
   return true;
 }
 
