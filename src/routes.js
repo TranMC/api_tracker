@@ -9,6 +9,7 @@ import lessonProgressRoutes from "./features/lesson-progress/lessonProgress.rout
 import monthlySummaryRoutes from "./features/monthly-summary/monthlySummary.routes.js";
 import driveRoutes from "./features/drive/drive.routes.js";
 import notificationRoutes from "./features/notifications/notification.routes.js";
+import settingsRoutes from "./features/settings/settings.routes.js";
 import { getMonthlySummaryLiveHandler } from "./features/monthly-summary/monthlySummary.controller.js";
 
 const apiRouter = Router();
@@ -25,5 +26,6 @@ apiRouter.use("/monthly-summary", monthlySummaryRoutes);
 apiRouter.get("/monthly-summary-live", getMonthlySummaryLiveHandler); // Đảm bảo tương thích tuyệt đối
 apiRouter.use("/", driveRoutes);
 apiRouter.use("/", notificationRoutes);
+apiRouter.use("/settings", settingsRoutes);
 
 export default apiRouter;
