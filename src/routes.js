@@ -10,11 +10,13 @@ import monthlySummaryRoutes from "./features/monthly-summary/monthlySummary.rout
 import driveRoutes from "./features/drive/drive.routes.js";
 import notificationRoutes from "./features/notifications/notification.routes.js";
 import settingsRoutes from "./features/settings/settings.routes.js";
+import healthRoutes from "./features/health/health.routes.js";
 import { getMonthlySummaryLiveHandler } from "./features/monthly-summary/monthlySummary.controller.js";
 
 const apiRouter = Router();
 
 // Gắn các routes theo tính năng
+apiRouter.use("/health", healthRoutes);
 apiRouter.use("/", authRoutes);
 apiRouter.use("/classes", classesRoutes);
 apiRouter.use("/students", studentsRoutes);

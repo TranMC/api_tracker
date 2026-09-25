@@ -2,6 +2,7 @@ import express from "express";
 import cors from "cors";
 import { ENV } from "./config/env.js";
 import apiRouter from "./routes.js";
+import healthRoutes from "./features/health/health.routes.js";
 import { errorHandler } from "./common/error.middleware.js";
 
 const app = express();
@@ -31,7 +32,10 @@ app.use((req, res, next) => {
   next();
 });
 
-// Health check endpoint
+// Health check endpoint trực tiếp
+app.use("/health", healthRoutes);
+
+// Root fallback endpoint
 app.get("/", (req, res) => {
   res.send("Student Tracker API running!");
 });
