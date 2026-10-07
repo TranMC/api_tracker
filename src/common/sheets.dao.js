@@ -297,3 +297,53 @@ export async function cleanEmptyRows(sheetName) {
   });
 }
 
+/**
+ * Đảm bảo một sheet tồn tại, nếu chưa có thì tự động tạo mới cùng hàng header
+ */
+export async function ensureSheetExists(sheetName, defaultHeaders = []) {
+  if (!sheets) throw new Error("Google Sheets client is not initialized");
+  const res = await withRetry(async () => {
+    return await sheets.spreadsheets.get({
+      spreadsheetId: ENV.SHEET_ID,
+      fields: "sheets(properties(sheetId,title))",
+    });
+  });
+  const existingSheets = res.data.sheets || [];
+  const found = existingSheets.find(
+    (s) => s.properties?.title?.toLowerCase() === sheetName.toLowerCase()
+  );
+  if (!found) {
+    await withRetry(async () => {
+      return await sheets.spreadsheets.batchUpdate({
+        spreadsheetId: ENV.SHEET_ID,
+        requestBody: {
+          requests: [
+            {
+              addSheet: {
+                properties: {
+                  title: sheetName,
+                },
+              },
+            },
+          ],
+        },
+      });
+    });
+
+    if (defaultHeaders.length > 0) {
+      await withRetry(async () => {
+        return await sheets.spreadsheets.values.update({
+          spreadsheetId: ENV.SHEET_ID,
+          range: `${sheetName}!A1`,
+          valueInputOption: "USER_ENTERED",
+          requestBody: {
+            values: [defaultHeaders],
+          },
+        });
+      });
+    }
+    invalidateSheetCache(sheetName);
+    sheetMetadataCache = null;
+  }
+}
+
