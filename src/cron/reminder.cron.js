@@ -5,39 +5,83 @@ import { firebaseAdmin } from "../config/firebase.js";
 import { ENV } from "../config/env.js";
 
 export function initReminderCronJobs() {
-  // Cron 1: Gửi email nhắc nhở kiểm tra BTVN (khi còn <= 10 phút hoặc quá hạn chưa quá 60 phút)
+  // Gộp tác vụ kiểm tra nhắc việc định kỳ (Email & Web Push) thành 1 cron duy nhất mỗi phút
+  // Giúp giảm tải 75% request Google Sheets và tránh xung đột cập nhật / DNS timeout
   cron.schedule("* * * * *", async () => {
     try {
+      // 1. Chỉ gọi Google Sheets lấy LessonProgress 1 lần
       const lessonProgress = await getSheetData("LessonProgress");
-      const accounts = await getSheetData("accounts");
+      if (!Array.isArray(lessonProgress) || lessonProgress.length === 0) return;
+
       const now = new Date();
 
+      // 2. Lọc các mục thỏa mãn điều kiện thời gian và chưa xử lý xong thông báo
+      const candidates = [];
       for (let i = 0; i < lessonProgress.length; i++) {
         const lp = lessonProgress[i];
         if (
           lp.HomeworkCheckDate &&
           lp.Checked !== "yes" &&
-          lp.NotificationSent !== "yes"
+          (lp.NotificationSent !== "yes" || (firebaseAdmin && lp.Pushed !== "yes"))
         ) {
           const checkDateStr = lp.HomeworkCheckDate.replace(" ", "T");
           const checkDate = new Date(checkDateStr);
           const diff = (checkDate.getTime() - now.getTime()) / 60000;
 
-          // Gửi khi còn <= 10 phút hoặc mới quá hạn <= 60 phút mà chưa kịp gửi
+          // Còn <= 10 phút hoặc mới quá hạn <= 60 phút
           if (diff <= 10 && diff >= -60) {
-            let targetEmail = "";
-            let teacherName = "";
+            candidates.push({ index: i, lp });
+          }
+        }
+      }
 
-            const teacherWithEmail = accounts.find(acc => acc.email);
-            if (teacherWithEmail && teacherWithEmail.email) {
-              targetEmail = teacherWithEmail.email;
-              teacherName = teacherWithEmail.FullName || teacherWithEmail.username || "";
-            } else if (ENV.EMAIL_USER) {
-              targetEmail = ENV.EMAIL_USER;
-              teacherName = "Thầy/Cô";
-            }
+      // Nếu không có lớp nào cần nhắc nhở trong phút này, thoát ngay (không tốn thêm request nào!)
+      if (candidates.length === 0) return;
 
-            if (targetEmail) {
+      // 3. Tải danh sách người nhận chỉ khi thực sự có dòng cần gửi
+      let accounts = [];
+      let fcmTokens = [];
+
+      const needEmail = candidates.some(({ lp }) => lp.NotificationSent !== "yes");
+      const needPush = firebaseAdmin && candidates.some(({ lp }) => lp.Pushed !== "yes");
+
+      if (needEmail) {
+        accounts = await getSheetData("accounts").catch((e) => {
+          console.warn("[CRON] Không thể lấy danh sách accounts:", e.message);
+          return [];
+        });
+      }
+
+      if (needPush) {
+        fcmTokens = await getSheetData("FCMTokens").catch((e) => {
+          console.warn("[CRON] Không thể lấy danh sách FCMTokens:", e.message);
+          return [];
+        });
+      }
+
+      let cachedHeaders = null;
+
+      // 4. Xử lý từng mục
+      for (const { index: i, lp } of candidates) {
+        let updatedLp = { ...lp };
+        let hasChanges = false;
+
+        // Xử lý Email
+        if (updatedLp.NotificationSent !== "yes") {
+          let targetEmail = "";
+          let teacherName = "";
+
+          const teacherWithEmail = accounts.find((acc) => acc.email);
+          if (teacherWithEmail && teacherWithEmail.email) {
+            targetEmail = teacherWithEmail.email;
+            teacherName = teacherWithEmail.FullName || teacherWithEmail.username || "";
+          } else if (ENV.EMAIL_USER) {
+            targetEmail = ENV.EMAIL_USER;
+            teacherName = "Thầy/Cô";
+          }
+
+          if (targetEmail) {
+            try {
               await sendMail({
                 to: targetEmail,
                 subject: `[Nhắc việc] Kiểm tra bài tập về nhà - Lớp ${lp.ClassID}`,
@@ -76,87 +120,65 @@ export function initReminderCronJobs() {
                   </div>
                 `,
               });
-
-              // Đánh dấu đã gửi thông báo
-              const headers = await getSheetHeaders("LessonProgress");
-              const updated = { ...lp, NotificationSent: "yes" };
-              const rowValues = headers.map(h => (updated[h] !== undefined ? updated[h] : ""));
-              await updateSheetRow("LessonProgress", i, rowValues);
+              updatedLp.NotificationSent = "yes";
+              hasChanges = true;
               console.log(`[EMAIL] Đã gửi nhắc nhở kiểm tra BTVN cho lớp ${lp.ClassID} ngày ${lp.Date} tới ${targetEmail}`);
+            } catch (mailErr) {
+              console.error(`[EMAIL ERROR] Gửi email thất bại cho lớp ${lp.ClassID}:`, mailErr.message);
             }
           }
+        }
+
+        // Xử lý Web Push Notification
+        if (firebaseAdmin && updatedLp.Pushed !== "yes") {
+          const tokens = fcmTokens.map((row) => row.token).filter(Boolean);
+          if (tokens.length > 0) {
+            const clientUrl = Array.isArray(ENV.CORS_ORIGINS) ? ENV.CORS_ORIGINS[0] : "http://localhost:5173";
+            const message = {
+              notification: {
+                title: "Nhắc kiểm tra bài tập về nhà",
+                body: `Bạn cần kiểm tra bài tập về nhà cho lớp ${lp.ClassID} (hạn: ${lp.HomeworkCheckDate.replace("T", " ")}).`,
+              },
+              tokens,
+              webpush: {
+                fcmOptions: {
+                  link: clientUrl,
+                },
+              },
+            };
+
+            try {
+              const response = await firebaseAdmin.messaging().sendEachForMulticast(message);
+              console.log(
+                "[PUSH] Đã gửi push notification cho lớp",
+                lp.ClassID,
+                "date",
+                lp.Date,
+                "result:",
+                response.successCount,
+                "/",
+                tokens.length
+              );
+              updatedLp.Pushed = "yes";
+              hasChanges = true;
+            } catch (err) {
+              console.error("[PUSH ERROR]", err?.message || err?.code || err);
+            }
+          }
+        }
+
+        // Nếu có cập nhật trạng thái thông báo, ghi lại vào Google Sheet
+        if (hasChanges) {
+          if (!cachedHeaders) {
+            cachedHeaders = await getSheetHeaders("LessonProgress");
+          }
+          const rowValues = cachedHeaders.map((h) => (updatedLp[h] !== undefined ? updatedLp[h] : ""));
+          await updateSheetRow("LessonProgress", i, rowValues);
         }
       }
     } catch (err) {
       const errMsg = err?.message || err?.code || err;
-      console.error(`[CRON EMAIL ERROR] ${errMsg}`);
-    }
-  });
-
-  // Cron 2: Gửi Web Push Notification qua Firebase Admin khi đến hạn BTVN
-  cron.schedule("* * * * *", async () => {
-    try {
-      if (!firebaseAdmin) return;
-      const lessonProgress = await getSheetData("LessonProgress");
-      const fcmTokens = await getSheetData("FCMTokens");
-      const now = new Date();
-
-      for (let i = 0; i < lessonProgress.length; i++) {
-        const lp = lessonProgress[i];
-        if (
-          lp.HomeworkCheckDate &&
-          lp.Checked !== "yes" &&
-          lp.Pushed !== "yes"
-        ) {
-          const checkDateStr = lp.HomeworkCheckDate.replace(" ", "T");
-          const checkDate = new Date(checkDateStr);
-          const diff = (checkDate.getTime() - now.getTime()) / 60000;
-
-          // Gửi khi còn <= 10 phút hoặc mới quá hạn <= 60 phút mà chưa kịp gửi
-          if (diff <= 10 && diff >= -60) {
-            const tokens = fcmTokens.map(row => row.token).filter(Boolean);
-            if (tokens.length > 0) {
-              const clientUrl = Array.isArray(ENV.CORS_ORIGINS) ? ENV.CORS_ORIGINS[0] : "http://localhost:5173";
-              const message = {
-                notification: {
-                  title: "Nhắc kiểm tra bài tập về nhà",
-                  body: `Bạn cần kiểm tra bài tập về nhà cho lớp ${lp.ClassID} (hạn: ${lp.HomeworkCheckDate.replace("T", " ")}).`,
-                },
-                tokens,
-                webpush: {
-                  fcmOptions: {
-                    link: clientUrl,
-                  },
-                },
-              };
-
-              try {
-                const response = await firebaseAdmin.messaging().sendEachForMulticast(message);
-                console.log(
-                  "[PUSH] Đã gửi push notification cho lớp",
-                  lp.ClassID,
-                  "date",
-                  lp.Date,
-                  "result:",
-                  response.successCount,
-                  "/",
-                  tokens.length
-                );
-
-                const headers = await getSheetHeaders("LessonProgress");
-                const updated = { ...lp, Pushed: "yes" };
-                const rowValues = headers.map(h => (updated[h] !== undefined ? updated[h] : ""));
-                await updateSheetRow("LessonProgress", i, rowValues);
-              } catch (err) {
-                console.error("[PUSH ERROR]", err?.message || err?.code || err);
-              }
-            }
-          }
-        }
-      }
-    } catch (err) {
-      const errMsg = err?.message || err?.code || err;
-      console.error(`[CRON PUSH ERROR] ${errMsg}`);
+      console.error(`[CRON REMINDER ERROR] ${errMsg}`);
     }
   });
 

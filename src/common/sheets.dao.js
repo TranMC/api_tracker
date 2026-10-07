@@ -10,6 +10,19 @@ const RETRYABLE_NETWORK_CODES = new Set([
   "ERR_NETWORK",
 ]);
 
+// In-memory cache và deduplication tránh gọi đồng thời lặp lại
+const sheetDataCache = new Map();
+const inFlightRequests = new Map();
+const CACHE_TTL_MS = 25000; // Cache 25 giây cho các tác vụ đọc
+
+export function invalidateSheetCache(sheetName) {
+  if (sheetName) {
+    sheetDataCache.delete(sheetName.toLowerCase());
+  } else {
+    sheetDataCache.clear();
+  }
+}
+
 /**
  * Tự động thử lại khi gặp lỗi mạng hoặc DNS tạm thời
  */
@@ -28,7 +41,9 @@ async function withRetry(fn, maxRetries = 3, baseDelay = 1500) {
         (err.status >= 500 && err.status < 600);
 
       if (attempt <= maxRetries && isNetworkError) {
-        const delay = baseDelay * Math.pow(2, attempt - 1);
+        // Thêm jitter ngẫu nhiên để tránh hiện tượng dồn cục (thundering herd)
+        const jitter = Math.floor(Math.random() * 500);
+        const delay = baseDelay * Math.pow(2, attempt - 1) + jitter;
         console.warn(`[SHEETS RETRY] Lỗi kết nối (${err.code || err.message}). Đang thử lại lần ${attempt}/${maxRetries} sau ${delay}ms...`);
         await new Promise((resolve) => setTimeout(resolve, delay));
         continue;
@@ -41,24 +56,53 @@ async function withRetry(fn, maxRetries = 3, baseDelay = 1500) {
 /**
  * Lấy toàn bộ dữ liệu của một Sheet dưới dạng mảng các Object (key là tên cột ở dòng 1)
  */
-export async function getSheetData(sheetName) {
+export async function getSheetData(sheetName, options = {}) {
   if (!sheets) throw new Error("Google Sheets client is not initialized");
-  return await withRetry(async () => {
-    const res = await sheets.spreadsheets.values.get({
-      spreadsheetId: ENV.SHEET_ID,
-      range: sheetName,
-    });
-    const rows = res.data.values;
-    if (!rows || rows.length < 2) return [];
-    const headers = rows[0].map(h => (h ? h.trim() : ""));
-    return rows.slice(1).map(row => {
-      const obj = {};
-      headers.forEach((h, i) => {
-        if (h) obj[h] = row[i] !== undefined ? row[i] : "";
+  const key = sheetName.toLowerCase();
+  const now = Date.now();
+
+  // 1. Kiểm tra cache nếu không yêu cầu bỏ qua cache
+  if (!options.bypassCache && sheetDataCache.has(key)) {
+    const item = sheetDataCache.get(key);
+    if (now - item.timestamp < CACHE_TTL_MS) {
+      return item.data;
+    }
+    sheetDataCache.delete(key);
+  }
+
+  // 2. Gom các request song song cùng SheetName để chỉ gửi 1 request Google duy nhất
+  if (inFlightRequests.has(key)) {
+    return await inFlightRequests.get(key);
+  }
+
+  const requestPromise = (async () => {
+    try {
+      const data = await withRetry(async () => {
+        const res = await sheets.spreadsheets.values.get({
+          spreadsheetId: ENV.SHEET_ID,
+          range: sheetName,
+        });
+        const rows = res.data.values;
+        if (!rows || rows.length < 2) return [];
+        const headers = rows[0].map(h => (h ? h.trim() : ""));
+        return rows.slice(1).map(row => {
+          const obj = {};
+          headers.forEach((h, i) => {
+            if (h) obj[h] = row[i] !== undefined ? row[i] : "";
+          });
+          return obj;
+        });
       });
-      return obj;
-    });
-  });
+
+      sheetDataCache.set(key, { timestamp: Date.now(), data });
+      return data;
+    } finally {
+      inFlightRequests.delete(key);
+    }
+  })();
+
+  inFlightRequests.set(key, requestPromise);
+  return await requestPromise;
 }
 
 /**
@@ -83,6 +127,7 @@ export async function getSheetHeaders(sheetName, defaultHeaders = []) {
  */
 export async function appendSheetRows(sheetName, rows) {
   if (!sheets) throw new Error("Google Sheets client is not initialized");
+  invalidateSheetCache(sheetName);
   return await withRetry(async () => {
     return await sheets.spreadsheets.values.append({
       spreadsheetId: ENV.SHEET_ID,
@@ -100,6 +145,7 @@ export async function appendSheetRows(sheetName, rows) {
  */
 export async function updateSheetRow(sheetName, rowIndex, rowValues) {
   if (!sheets) throw new Error("Google Sheets client is not initialized");
+  invalidateSheetCache(sheetName);
   const rowNum = Number(rowIndex) + 2;
   return await withRetry(async () => {
     return await sheets.spreadsheets.values.update({
@@ -166,6 +212,7 @@ export async function deleteSheetRow(sheetName, rowIndex) {
   if (rowIndex === undefined || rowIndex === null || rowIndex < 0) {
     throw new Error(`Invalid rowIndex: ${rowIndex}`);
   }
+  invalidateSheetCache(sheetName);
   const sheetId = await getSheetNumericId(sheetName);
   const startIndex = Number(rowIndex) + 1; // 0-based: row 1 (header) là 0, row 2 (data 0) là 1
   const endIndex = startIndex + 1;
@@ -204,6 +251,7 @@ export async function clearSheetRow(sheetName, rowIndex, colCount = 26) {
  */
 export async function cleanEmptyRows(sheetName) {
   if (!sheets) return 0;
+  invalidateSheetCache(sheetName);
   return await withRetry(async () => {
     const res = await sheets.spreadsheets.values.get({
       spreadsheetId: ENV.SHEET_ID,
